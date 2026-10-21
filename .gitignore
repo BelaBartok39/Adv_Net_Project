@@ -1,0 +1,5 @@
+# Containerlab runtime directories contain keys and generated configurations.
+labs/clab-*/
+.env
+.venv/
+__pycache__/

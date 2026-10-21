@@ -1,0 +1,66 @@
+name: advnet-diamond
+mgmt:
+  network: advnet-ceos-mgmt
+  ipv4-subnet: 172.30.100.0/24
+  ipv6-subnet: fd00:ad:100::/64
+topology:
+  nodes:
+    r1:
+      kind: arista_ceos
+      image: ceos:4.36.3M
+      mgmt-ipv4: 172.30.100.11
+      startup-config: configs/diamond/r1.cfg
+    r2:
+      kind: arista_ceos
+      image: ceos:4.36.3M
+      mgmt-ipv4: 172.30.100.12
+      startup-config: configs/diamond/r2.cfg
+    r3:
+      kind: arista_ceos
+      image: ceos:4.36.3M
+      mgmt-ipv4: 172.30.100.13
+      startup-config: configs/diamond/r3.cfg
+    r4:
+      kind: arista_ceos
+      image: ceos:4.36.3M
+      mgmt-ipv4: 172.30.100.14
+      startup-config: configs/diamond/r4.cfg
+    host-a:
+      kind: linux
+      image: alpine:3.22.1
+      mgmt-ipv4: 172.30.100.101
+      cmd: sleep infinity
+      exec:
+      - ip link set eth1 up
+      - ip address replace 10.10.1.10/24 dev eth1
+      - ip route del default
+      - ip route replace 10.10.2.0/24 via 10.10.1.1 dev eth1
+    host-b:
+      kind: linux
+      image: alpine:3.22.1
+      mgmt-ipv4: 172.30.100.102
+      cmd: sleep infinity
+      exec:
+      - ip link set eth1 up
+      - ip address replace 10.10.2.10/24 dev eth1
+      - ip route del default
+      - ip route replace 10.10.1.0/24 via 10.10.2.1 dev eth1
+  links:
+  - endpoints:
+    - r1:eth1
+    - r2:eth1
+  - endpoints:
+    - r1:eth2
+    - r3:eth1
+  - endpoints:
+    - r2:eth2
+    - r4:eth1
+  - endpoints:
+    - r3:eth2
+    - r4:eth2
+  - endpoints:
+    - r1:eth3
+    - host-a:eth1
+  - endpoints:
+    - r4:eth3
+    - host-b:eth1

@@ -1,0 +1,12 @@
+name: ceos-smoke
+
+mgmt:
+  network: advnet-ceos-mgmt
+  ipv4-subnet: 172.30.100.0/24
+  ipv6-subnet: fd00:ad:100::/64
+
+topology:
+  nodes:
+    r1:
+      kind: arista_ceos
+      image: ceos:4.36.3M
