@@ -1,0 +1,174 @@
+{
+  "$defs": {
+    "AdminChange": {
+      "additionalProperties": false,
+      "properties": {
+        "device": {
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "title": "Device",
+          "type": "string"
+        },
+        "interface": {
+          "pattern": "^Ethernet[1-9][0-9]*(?:/[1-9][0-9]*)*$",
+          "title": "Interface",
+          "type": "string"
+        },
+        "action": {
+          "const": "set_interface_enabled",
+          "title": "Action",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "device",
+        "interface",
+        "action",
+        "value"
+      ],
+      "title": "AdminChange",
+      "type": "object"
+    },
+    "AreaChange": {
+      "additionalProperties": false,
+      "properties": {
+        "device": {
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "title": "Device",
+          "type": "string"
+        },
+        "interface": {
+          "pattern": "^Ethernet[1-9][0-9]*(?:/[1-9][0-9]*)*$",
+          "title": "Interface",
+          "type": "string"
+        },
+        "action": {
+          "const": "set_ospf_area",
+          "title": "Action",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "device",
+        "interface",
+        "action",
+        "value"
+      ],
+      "title": "AreaChange",
+      "type": "object"
+    },
+    "CostChange": {
+      "additionalProperties": false,
+      "properties": {
+        "device": {
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "title": "Device",
+          "type": "string"
+        },
+        "interface": {
+          "pattern": "^Ethernet[1-9][0-9]*(?:/[1-9][0-9]*)*$",
+          "title": "Interface",
+          "type": "string"
+        },
+        "action": {
+          "const": "set_ospf_cost",
+          "title": "Action",
+          "type": "string"
+        },
+        "value": {
+          "maximum": 65535,
+          "minimum": 1,
+          "title": "Value",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "device",
+        "interface",
+        "action",
+        "value"
+      ],
+      "title": "CostChange",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "outcome": {
+      "enum": [
+        "candidate",
+        "no_change",
+        "needs_observation"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "diagnosis": {
+      "minLength": 1,
+      "title": "Diagnosis",
+      "type": "string"
+    },
+    "evidence": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Evidence",
+      "type": "array"
+    },
+    "changes": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "set_interface_enabled": "#/$defs/AdminChange",
+            "set_ospf_area": "#/$defs/AreaChange",
+            "set_ospf_cost": "#/$defs/CostChange"
+          },
+          "propertyName": "action"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/CostChange"
+          },
+          {
+            "$ref": "#/$defs/AreaChange"
+          },
+          {
+            "$ref": "#/$defs/AdminChange"
+          }
+        ]
+      },
+      "maxItems": 12,
+      "title": "Changes",
+      "type": "array"
+    },
+    "expected_effect": {
+      "minLength": 1,
+      "title": "Expected Effect",
+      "type": "string"
+    },
+    "observation_requests": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 8,
+      "title": "Observation Requests",
+      "type": "array"
+    }
+  },
+  "required": [
+    "outcome",
+    "diagnosis",
+    "evidence",
+    "expected_effect"
+  ],
+  "title": "Proposal",
+  "type": "object"
+}

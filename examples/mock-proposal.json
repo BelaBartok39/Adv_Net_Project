@@ -1,0 +1,24 @@
+{
+  "outcome": "candidate",
+  "diagnosis": "The offered traffic exceeds the stated preferred-path capacity while the alternate path has spare capacity.",
+  "evidence": [
+    "Synthetic R2 path utilization is 0.96; R3 path utilization is 0.12.",
+    "The supplied topology has an alternate R1-R3-R4 path."
+  ],
+  "changes": [
+    {
+      "device": "r1",
+      "interface": "Ethernet1",
+      "action": "set_ospf_cost",
+      "value": 300
+    },
+    {
+      "device": "r4",
+      "interface": "Ethernet1",
+      "action": "set_ospf_cost",
+      "value": 300
+    }
+  ],
+  "expected_effect": "Move host-to-host traffic to R3; the controller must measure whether latency or utilization improves without reducing delivered traffic.",
+  "observation_requests": []
+}

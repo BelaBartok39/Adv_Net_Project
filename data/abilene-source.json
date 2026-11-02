@@ -1,0 +1,19 @@
+{
+  "source_url": "https://raw.githubusercontent.com/sk2/topologyzoo/master/sources/Abilene.graphml",
+  "dataset": "Internet Topology Zoo Abilene, 2005_02",
+  "adaptation": "Each listed source edge is implemented as one bidirectional Ethernet link. Costs, addresses, hosts, and emulated capacities are experiment choices, not historical measurements.",
+  "nodes": [
+    {"id": "n0", "name": "Seattle", "router": "sea"},
+    {"id": "n1", "name": "Sunnyvale", "router": "sva"},
+    {"id": "n2", "name": "Los Angeles", "router": "lax"},
+    {"id": "n3", "name": "Denver", "router": "den"},
+    {"id": "n4", "name": "Kansas City", "router": "kcy"},
+    {"id": "n5", "name": "Houston", "router": "hou"},
+    {"id": "n6", "name": "Atlanta", "router": "atl"},
+    {"id": "n7", "name": "Indianapolis", "router": "ind"},
+    {"id": "n8", "name": "Chicago", "router": "chi"},
+    {"id": "n9", "name": "Washington DC", "router": "was"},
+    {"id": "n10", "name": "New York", "router": "nyc"}
+  ],
+  "edges": [["n0", "n1"], ["n0", "n3"], ["n1", "n2"], ["n1", "n3"], ["n2", "n5"], ["n3", "n4"], ["n4", "n5"], ["n4", "n7"], ["n5", "n6"], ["n6", "n9"], ["n6", "n7"], ["n7", "n8"], ["n8", "n10"], ["n9", "n10"]]
+}

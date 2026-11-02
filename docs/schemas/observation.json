@@ -1,0 +1,100 @@
+{
+  "$defs": {
+    "DeviceState": {
+      "additionalProperties": false,
+      "properties": {
+        "interfaces": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Interfaces",
+          "type": "array"
+        },
+        "running_config": {
+          "title": "Running Config",
+          "type": "string"
+        },
+        "telemetry": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Telemetry",
+          "type": "object"
+        }
+      },
+      "required": [
+        "interfaces",
+        "running_config"
+      ],
+      "title": "DeviceState",
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1",
+      "default": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "scenario_id": {
+      "minLength": 1,
+      "title": "Scenario Id",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "objective": {
+      "minLength": 1,
+      "title": "Objective",
+      "type": "string"
+    },
+    "requirements": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Requirements",
+      "type": "array"
+    },
+    "topology": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Topology",
+      "type": "array"
+    },
+    "devices": {
+      "additionalProperties": {
+        "$ref": "#/$defs/DeviceState"
+      },
+      "minProperties": 1,
+      "title": "Devices",
+      "type": "object"
+    },
+    "measurements": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Measurements",
+      "type": "object"
+    }
+  },
+  "required": [
+    "scenario_id",
+    "observed_at",
+    "objective",
+    "requirements",
+    "topology",
+    "devices",
+    "measurements"
+  ],
+  "title": "Observation",
+  "type": "object"
+}

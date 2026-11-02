@@ -1,0 +1,360 @@
+{
+  "lab": "advnet-abilene",
+  "source": "https://raw.githubusercontent.com/sk2/topologyzoo/master/sources/Abilene.graphml",
+  "routers": {
+    "sea": {
+      "site": "Seattle",
+      "router_id": "10.255.0.1",
+      "interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3"
+      ],
+      "transit_interfaces": [
+        "Ethernet1",
+        "Ethernet2"
+      ],
+      "host_interface": "Ethernet3",
+      "host": "h-sea",
+      "host_ip": "10.64.1.10",
+      "gateway": "10.64.1.1",
+      "host_subnet": "10.64.1.0/24",
+      "mgmt_ip": "172.30.100.41"
+    },
+    "sva": {
+      "site": "Sunnyvale",
+      "router_id": "10.255.0.2",
+      "interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3",
+        "Ethernet4"
+      ],
+      "transit_interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3"
+      ],
+      "host_interface": "Ethernet4",
+      "host": "h-sva",
+      "host_ip": "10.64.2.10",
+      "gateway": "10.64.2.1",
+      "host_subnet": "10.64.2.0/24",
+      "mgmt_ip": "172.30.100.42"
+    },
+    "lax": {
+      "site": "Los Angeles",
+      "router_id": "10.255.0.3",
+      "interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3"
+      ],
+      "transit_interfaces": [
+        "Ethernet1",
+        "Ethernet2"
+      ],
+      "host_interface": "Ethernet3",
+      "host": "h-lax",
+      "host_ip": "10.64.3.10",
+      "gateway": "10.64.3.1",
+      "host_subnet": "10.64.3.0/24",
+      "mgmt_ip": "172.30.100.43"
+    },
+    "den": {
+      "site": "Denver",
+      "router_id": "10.255.0.4",
+      "interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3",
+        "Ethernet4"
+      ],
+      "transit_interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3"
+      ],
+      "host_interface": "Ethernet4",
+      "host": "h-den",
+      "host_ip": "10.64.4.10",
+      "gateway": "10.64.4.1",
+      "host_subnet": "10.64.4.0/24",
+      "mgmt_ip": "172.30.100.44"
+    },
+    "kcy": {
+      "site": "Kansas City",
+      "router_id": "10.255.0.5",
+      "interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3",
+        "Ethernet4"
+      ],
+      "transit_interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3"
+      ],
+      "host_interface": "Ethernet4",
+      "host": "h-kcy",
+      "host_ip": "10.64.5.10",
+      "gateway": "10.64.5.1",
+      "host_subnet": "10.64.5.0/24",
+      "mgmt_ip": "172.30.100.45"
+    },
+    "hou": {
+      "site": "Houston",
+      "router_id": "10.255.0.6",
+      "interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3",
+        "Ethernet4"
+      ],
+      "transit_interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3"
+      ],
+      "host_interface": "Ethernet4",
+      "host": "h-hou",
+      "host_ip": "10.64.6.10",
+      "gateway": "10.64.6.1",
+      "host_subnet": "10.64.6.0/24",
+      "mgmt_ip": "172.30.100.46"
+    },
+    "atl": {
+      "site": "Atlanta",
+      "router_id": "10.255.0.7",
+      "interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3",
+        "Ethernet4"
+      ],
+      "transit_interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3"
+      ],
+      "host_interface": "Ethernet4",
+      "host": "h-atl",
+      "host_ip": "10.64.7.10",
+      "gateway": "10.64.7.1",
+      "host_subnet": "10.64.7.0/24",
+      "mgmt_ip": "172.30.100.47"
+    },
+    "ind": {
+      "site": "Indianapolis",
+      "router_id": "10.255.0.8",
+      "interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3",
+        "Ethernet4"
+      ],
+      "transit_interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3"
+      ],
+      "host_interface": "Ethernet4",
+      "host": "h-ind",
+      "host_ip": "10.64.8.10",
+      "gateway": "10.64.8.1",
+      "host_subnet": "10.64.8.0/24",
+      "mgmt_ip": "172.30.100.48"
+    },
+    "chi": {
+      "site": "Chicago",
+      "router_id": "10.255.0.9",
+      "interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3"
+      ],
+      "transit_interfaces": [
+        "Ethernet1",
+        "Ethernet2"
+      ],
+      "host_interface": "Ethernet3",
+      "host": "h-chi",
+      "host_ip": "10.64.9.10",
+      "gateway": "10.64.9.1",
+      "host_subnet": "10.64.9.0/24",
+      "mgmt_ip": "172.30.100.49"
+    },
+    "was": {
+      "site": "Washington DC",
+      "router_id": "10.255.0.10",
+      "interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3"
+      ],
+      "transit_interfaces": [
+        "Ethernet1",
+        "Ethernet2"
+      ],
+      "host_interface": "Ethernet3",
+      "host": "h-was",
+      "host_ip": "10.64.10.10",
+      "gateway": "10.64.10.1",
+      "host_subnet": "10.64.10.0/24",
+      "mgmt_ip": "172.30.100.50"
+    },
+    "nyc": {
+      "site": "New York",
+      "router_id": "10.255.0.11",
+      "interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3"
+      ],
+      "transit_interfaces": [
+        "Ethernet1",
+        "Ethernet2"
+      ],
+      "host_interface": "Ethernet3",
+      "host": "h-nyc",
+      "host_ip": "10.64.11.10",
+      "gateway": "10.64.11.1",
+      "host_subnet": "10.64.11.0/24",
+      "mgmt_ip": "172.30.100.51"
+    }
+  },
+  "links": [
+    {
+      "a": "sea",
+      "a_interface": "Ethernet1",
+      "b": "sva",
+      "b_interface": "Ethernet1",
+      "id": "sea-sva",
+      "cost": 10,
+      "capacity_mbps": 100
+    },
+    {
+      "a": "sea",
+      "a_interface": "Ethernet2",
+      "b": "den",
+      "b_interface": "Ethernet1",
+      "id": "sea-den",
+      "cost": 10,
+      "capacity_mbps": 100
+    },
+    {
+      "a": "sva",
+      "a_interface": "Ethernet2",
+      "b": "lax",
+      "b_interface": "Ethernet1",
+      "id": "sva-lax",
+      "cost": 10,
+      "capacity_mbps": 100
+    },
+    {
+      "a": "sva",
+      "a_interface": "Ethernet3",
+      "b": "den",
+      "b_interface": "Ethernet2",
+      "id": "sva-den",
+      "cost": 10,
+      "capacity_mbps": 100
+    },
+    {
+      "a": "lax",
+      "a_interface": "Ethernet2",
+      "b": "hou",
+      "b_interface": "Ethernet1",
+      "id": "lax-hou",
+      "cost": 10,
+      "capacity_mbps": 100
+    },
+    {
+      "a": "den",
+      "a_interface": "Ethernet3",
+      "b": "kcy",
+      "b_interface": "Ethernet1",
+      "id": "den-kcy",
+      "cost": 10,
+      "capacity_mbps": 100
+    },
+    {
+      "a": "kcy",
+      "a_interface": "Ethernet2",
+      "b": "hou",
+      "b_interface": "Ethernet2",
+      "id": "kcy-hou",
+      "cost": 10,
+      "capacity_mbps": 100
+    },
+    {
+      "a": "kcy",
+      "a_interface": "Ethernet3",
+      "b": "ind",
+      "b_interface": "Ethernet1",
+      "id": "kcy-ind",
+      "cost": 10,
+      "capacity_mbps": 100
+    },
+    {
+      "a": "hou",
+      "a_interface": "Ethernet3",
+      "b": "atl",
+      "b_interface": "Ethernet1",
+      "id": "hou-atl",
+      "cost": 10,
+      "capacity_mbps": 100
+    },
+    {
+      "a": "atl",
+      "a_interface": "Ethernet2",
+      "b": "was",
+      "b_interface": "Ethernet1",
+      "id": "atl-was",
+      "cost": 10,
+      "capacity_mbps": 100
+    },
+    {
+      "a": "atl",
+      "a_interface": "Ethernet3",
+      "b": "ind",
+      "b_interface": "Ethernet2",
+      "id": "atl-ind",
+      "cost": 10,
+      "capacity_mbps": 100
+    },
+    {
+      "a": "ind",
+      "a_interface": "Ethernet3",
+      "b": "chi",
+      "b_interface": "Ethernet1",
+      "id": "ind-chi",
+      "cost": 10,
+      "capacity_mbps": 100
+    },
+    {
+      "a": "chi",
+      "a_interface": "Ethernet2",
+      "b": "nyc",
+      "b_interface": "Ethernet1",
+      "id": "chi-nyc",
+      "cost": 10,
+      "capacity_mbps": 100
+    },
+    {
+      "a": "was",
+      "a_interface": "Ethernet2",
+      "b": "nyc",
+      "b_interface": "Ethernet2",
+      "id": "was-nyc",
+      "cost": 10,
+      "capacity_mbps": 100
+    }
+  ],
+  "capacity_note": "100 Mbps is an experimental reference, enforced only when traffic shaping is enabled; not a claim about veth capacity.",
+  "requirements": [
+    "Every test host must reach every other test host over the data network.",
+    "The MGMT VRF must not be used for experiment traffic."
+  ]
+}

@@ -1,0 +1,13 @@
+[
+  {
+    "attempt": 1,
+    "candidate_id": "replace-with-decision-id-from-previous-result",
+    "stage": "verification",
+    "accepted": false,
+    "details": [
+      "Example only: proposed path violates an explicit required-path policy."
+    ],
+    "measurements": {},
+    "rollback_succeeded": null
+  }
+]

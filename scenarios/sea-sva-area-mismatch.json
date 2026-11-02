@@ -1,0 +1,22 @@
+{
+  "name": "sea-sva-area-mismatch",
+  "objective": "repair",
+  "objective_text": "Restore all required host connectivity and OSPF adjacencies without degrading healthy performance.",
+  "fault": {
+    "outcome": "candidate",
+    "diagnosis": "Harness fault injection; not provided to the model.",
+    "evidence": [
+      "Private scenario definition."
+    ],
+    "changes": [
+      {
+        "device": "sea",
+        "interface": "Ethernet1",
+        "action": "set_ospf_area",
+        "value": "0.0.0.1"
+      }
+    ],
+    "expected_effect": "Produce a reproducible impairment.",
+    "observation_requests": []
+  }
+}

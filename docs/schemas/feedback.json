@@ -1,0 +1,68 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "attempt": {
+      "maximum": 5,
+      "minimum": 1,
+      "title": "Attempt",
+      "type": "integer"
+    },
+    "candidate_id": {
+      "minLength": 1,
+      "title": "Candidate Id",
+      "type": "string"
+    },
+    "stage": {
+      "enum": [
+        "decision",
+        "verification",
+        "runtime"
+      ],
+      "title": "Stage",
+      "type": "string"
+    },
+    "accepted": {
+      "title": "Accepted",
+      "type": "boolean"
+    },
+    "details": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Details",
+      "type": "array"
+    },
+    "measurements": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Measurements",
+      "type": "object"
+    },
+    "rollback_succeeded": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Rollback Succeeded"
+    }
+  },
+  "required": [
+    "attempt",
+    "candidate_id",
+    "stage",
+    "accepted",
+    "details"
+  ],
+  "title": "Feedback",
+  "type": "object"
+}

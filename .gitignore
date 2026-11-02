@@ -3,3 +3,8 @@ labs/clab-*/
 .env
 .venv/
 __pycache__/
+runs/
+captures/
+*.egg-info/
+build/
+dist/

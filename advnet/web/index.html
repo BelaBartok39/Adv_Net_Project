@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Abilene Observatory</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+<header class="masthead">
+  <div class="brand"><span class="brand-mark" aria-hidden="true">A<span>·</span></span><div><h1>Abilene <span>Observatory</span></h1><p>NETWORK REPAIR / EXPERIMENT MONITOR</p></div></div>
+  <div class="header-right"><span id="connection" class="pill muted">CONNECTING</span><span class="read-only">◉ Read-only</span><button id="pause" class="button quiet">Pause view</button></div>
+</header>
+<main>
+  <div id="notice" class="notice" role="status">Loading local observations…</div>
+  <section class="metrics" aria-label="Network summary">
+    <article><span class="metric-label">Router status</span><div><strong id="router-count">—</strong><span class="metric-unit"> / 11</span></div><p id="router-note">Waiting for observations</p></article>
+    <article><span class="metric-label">OSPF backbone</span><div><strong id="link-count">—</strong><span class="metric-unit"> / 14</span></div><p id="link-note">Adjacencies, not physical-link state</p></article>
+    <article><span class="metric-label">Last connectivity check</span><div><strong id="pair-count">—</strong><span class="metric-unit"> / 110</span></div><p id="pair-note">No measurements loaded</p></article>
+    <article><span class="metric-label">Peak observed traffic</span><div><strong id="peak-rate">—</strong><span id="peak-unit" class="metric-unit"> Mbps</span></div><p id="peak-note">Directional interface counters</p></article>
+  </section>
+  <div class="workspace">
+    <section class="map-panel panel" aria-labelledby="map-title">
+      <div class="panel-heading"><div><span class="eyebrow">INTERNET TOPOLOGY ZOO · 2005_02</span><h2 id="map-title">Abilene backbone</h2></div><div class="map-tools"><label><input type="checkbox" id="animate" checked> Rate animation</label><button id="zoom-out" class="icon-button" aria-label="Zoom out">−</button><button id="zoom-in" class="icon-button" aria-label="Zoom in">+</button><button id="fit" class="icon-button" aria-label="Fit topology">↗</button></div></div>
+      <div class="map-wrap"><svg id="topology" viewBox="0 0 1120 650" role="img" aria-label="Interactive Abilene topology. Select a router or link for details."></svg><div class="map-caption">11 routers <span>·</span> 14 backbone links <span>·</span> 11 test hosts</div></div>
+      <div class="legend"><span><i class="dot green"></i> OSPF full</span><span><i class="dot amber"></i> Degraded</span><span><i class="dot gray"></i> Unknown</span><span><i class="line cyan"></i> Probed path</span><span class="legend-note">Width = traffic rate. Animation ≠ individual packets.</span></div>
+      <div class="flow-controls"><div><span class="eyebrow">FOLLOW A FLOW</span><p>Send an ICMP traceroute between test hosts.</p></div><label class="sr-only" for="flow-source">Source site</label><select id="flow-source"></select><span class="arrow">→</span><label class="sr-only" for="flow-destination">Destination site</label><select id="flow-destination"></select><button id="probe" class="button primary">Probe path <span aria-hidden="true">↗</span></button></div>
+      <div id="path-description" class="path-description">No path probe yet. Link counters alone do not establish a packet’s route.</div>
+      <details id="trace-details" class="trace-details hidden"><summary>Traceroute details</summary><pre id="trace-output" class="code-block"></pre></details>
+    </section>
+    <aside class="inspector panel" aria-labelledby="inspector-title">
+      <div class="panel-heading"><div><span class="eyebrow">INSPECTOR</span><h2 id="inspector-title">Seattle</h2></div><span id="node-state" class="pill muted">UNKNOWN</span></div>
+      <div class="tabs" role="tablist" aria-label="Inspector"><button class="tab active" role="tab" aria-selected="true" data-tab="device">Device</button><button class="tab" role="tab" aria-selected="false" data-tab="config">Configuration</button><button class="tab" role="tab" aria-selected="false" data-tab="changes">LLM changes</button></div>
+      <div id="device-panel" class="tab-panel"></div>
+      <div id="config-panel" class="tab-panel hidden"><p id="config-provenance" class="small"></p><pre id="config-content" class="code-block"></pre></div>
+      <div id="changes-panel" class="tab-panel hidden"><label class="small" for="attempt-select">Decision attempt</label><select id="attempt-select"></select><div id="change-content"></div></div>
+    </aside>
+  </div>
+  <section class="timeline-panel panel" aria-labelledby="timeline-title">
+    <div class="panel-heading"><div><span class="eyebrow">OBSERVE → REASON → VERIFY → APPLY → MEASURE</span><h2 id="timeline-title">Execution timeline</h2></div><span id="trial-state" class="pill muted">NO TRIAL</span></div>
+    <div id="trial-meta" class="small trial-meta">Waiting for an experiment. The dashboard never starts trials or changes router configuration.</div>
+    <div id="timeline" class="timeline"><div class="empty">Run an LLM experiment in your terminal to watch its stages appear here.</div></div>
+  </section>
+  <section class="replay-panel panel" aria-label="Replay experiment or observer session">
+    <div><span class="eyebrow">TIME MACHINE</span><h2>Replay observations</h2></div>
+    <label class="sr-only" for="recording">Recording</label><select id="recording"><option value="">Choose a recording…</option></select><button id="load-replay" class="button quiet">Load</button><button id="play" class="icon-button" aria-label="Play recorded checkpoints" disabled>▶</button><label class="sr-only" for="scrubber">Replay checkpoint</label><input id="scrubber" type="range" min="0" max="0" value="0" disabled><span id="replay-position" class="small">Live view</span><button id="return-live" class="button quiet" disabled>Return to current</button>
+  </section>
+  <footer><span id="sample-time">No telemetry sample</span><span>Local observer · <span id="recording-state">Not recording</span> · <span id="rtt">RTT —</span></span></footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,373 @@
+{
+  "name": "advnet-abilene",
+  "mgmt": {
+    "network": "advnet-ceos-mgmt",
+    "ipv4-subnet": "172.30.100.0/24",
+    "ipv6-subnet": "fd00:ad:100::/64"
+  },
+  "topology": {
+    "nodes": {
+      "sea": {
+        "kind": "arista_ceos",
+        "image": "ceos:4.36.3M",
+        "mgmt-ipv4": "172.30.100.41",
+        "startup-config": "configs/abilene/sea.cfg"
+      },
+      "h-sea": {
+        "kind": "linux",
+        "image": "advnet-host:0.1",
+        "mgmt-ipv4": "172.30.100.141",
+        "cmd": "sleep infinity",
+        "exec": [
+          "ip link set eth1 up",
+          "ip address replace 10.64.1.10/24 dev eth1",
+          "ip route del default",
+          "ip route replace 10.64.0.0/16 via 10.64.1.1 dev eth1",
+          "iperf3 -s -B 10.64.1.10 -D"
+        ]
+      },
+      "sva": {
+        "kind": "arista_ceos",
+        "image": "ceos:4.36.3M",
+        "mgmt-ipv4": "172.30.100.42",
+        "startup-config": "configs/abilene/sva.cfg"
+      },
+      "h-sva": {
+        "kind": "linux",
+        "image": "advnet-host:0.1",
+        "mgmt-ipv4": "172.30.100.142",
+        "cmd": "sleep infinity",
+        "exec": [
+          "ip link set eth1 up",
+          "ip address replace 10.64.2.10/24 dev eth1",
+          "ip route del default",
+          "ip route replace 10.64.0.0/16 via 10.64.2.1 dev eth1",
+          "iperf3 -s -B 10.64.2.10 -D"
+        ]
+      },
+      "lax": {
+        "kind": "arista_ceos",
+        "image": "ceos:4.36.3M",
+        "mgmt-ipv4": "172.30.100.43",
+        "startup-config": "configs/abilene/lax.cfg"
+      },
+      "h-lax": {
+        "kind": "linux",
+        "image": "advnet-host:0.1",
+        "mgmt-ipv4": "172.30.100.143",
+        "cmd": "sleep infinity",
+        "exec": [
+          "ip link set eth1 up",
+          "ip address replace 10.64.3.10/24 dev eth1",
+          "ip route del default",
+          "ip route replace 10.64.0.0/16 via 10.64.3.1 dev eth1",
+          "iperf3 -s -B 10.64.3.10 -D"
+        ]
+      },
+      "den": {
+        "kind": "arista_ceos",
+        "image": "ceos:4.36.3M",
+        "mgmt-ipv4": "172.30.100.44",
+        "startup-config": "configs/abilene/den.cfg"
+      },
+      "h-den": {
+        "kind": "linux",
+        "image": "advnet-host:0.1",
+        "mgmt-ipv4": "172.30.100.144",
+        "cmd": "sleep infinity",
+        "exec": [
+          "ip link set eth1 up",
+          "ip address replace 10.64.4.10/24 dev eth1",
+          "ip route del default",
+          "ip route replace 10.64.0.0/16 via 10.64.4.1 dev eth1",
+          "iperf3 -s -B 10.64.4.10 -D"
+        ]
+      },
+      "kcy": {
+        "kind": "arista_ceos",
+        "image": "ceos:4.36.3M",
+        "mgmt-ipv4": "172.30.100.45",
+        "startup-config": "configs/abilene/kcy.cfg"
+      },
+      "h-kcy": {
+        "kind": "linux",
+        "image": "advnet-host:0.1",
+        "mgmt-ipv4": "172.30.100.145",
+        "cmd": "sleep infinity",
+        "exec": [
+          "ip link set eth1 up",
+          "ip address replace 10.64.5.10/24 dev eth1",
+          "ip route del default",
+          "ip route replace 10.64.0.0/16 via 10.64.5.1 dev eth1",
+          "iperf3 -s -B 10.64.5.10 -D"
+        ]
+      },
+      "hou": {
+        "kind": "arista_ceos",
+        "image": "ceos:4.36.3M",
+        "mgmt-ipv4": "172.30.100.46",
+        "startup-config": "configs/abilene/hou.cfg"
+      },
+      "h-hou": {
+        "kind": "linux",
+        "image": "advnet-host:0.1",
+        "mgmt-ipv4": "172.30.100.146",
+        "cmd": "sleep infinity",
+        "exec": [
+          "ip link set eth1 up",
+          "ip address replace 10.64.6.10/24 dev eth1",
+          "ip route del default",
+          "ip route replace 10.64.0.0/16 via 10.64.6.1 dev eth1",
+          "iperf3 -s -B 10.64.6.10 -D"
+        ]
+      },
+      "atl": {
+        "kind": "arista_ceos",
+        "image": "ceos:4.36.3M",
+        "mgmt-ipv4": "172.30.100.47",
+        "startup-config": "configs/abilene/atl.cfg"
+      },
+      "h-atl": {
+        "kind": "linux",
+        "image": "advnet-host:0.1",
+        "mgmt-ipv4": "172.30.100.147",
+        "cmd": "sleep infinity",
+        "exec": [
+          "ip link set eth1 up",
+          "ip address replace 10.64.7.10/24 dev eth1",
+          "ip route del default",
+          "ip route replace 10.64.0.0/16 via 10.64.7.1 dev eth1",
+          "iperf3 -s -B 10.64.7.10 -D"
+        ]
+      },
+      "ind": {
+        "kind": "arista_ceos",
+        "image": "ceos:4.36.3M",
+        "mgmt-ipv4": "172.30.100.48",
+        "startup-config": "configs/abilene/ind.cfg"
+      },
+      "h-ind": {
+        "kind": "linux",
+        "image": "advnet-host:0.1",
+        "mgmt-ipv4": "172.30.100.148",
+        "cmd": "sleep infinity",
+        "exec": [
+          "ip link set eth1 up",
+          "ip address replace 10.64.8.10/24 dev eth1",
+          "ip route del default",
+          "ip route replace 10.64.0.0/16 via 10.64.8.1 dev eth1",
+          "iperf3 -s -B 10.64.8.10 -D"
+        ]
+      },
+      "chi": {
+        "kind": "arista_ceos",
+        "image": "ceos:4.36.3M",
+        "mgmt-ipv4": "172.30.100.49",
+        "startup-config": "configs/abilene/chi.cfg"
+      },
+      "h-chi": {
+        "kind": "linux",
+        "image": "advnet-host:0.1",
+        "mgmt-ipv4": "172.30.100.149",
+        "cmd": "sleep infinity",
+        "exec": [
+          "ip link set eth1 up",
+          "ip address replace 10.64.9.10/24 dev eth1",
+          "ip route del default",
+          "ip route replace 10.64.0.0/16 via 10.64.9.1 dev eth1",
+          "iperf3 -s -B 10.64.9.10 -D"
+        ]
+      },
+      "was": {
+        "kind": "arista_ceos",
+        "image": "ceos:4.36.3M",
+        "mgmt-ipv4": "172.30.100.50",
+        "startup-config": "configs/abilene/was.cfg"
+      },
+      "h-was": {
+        "kind": "linux",
+        "image": "advnet-host:0.1",
+        "mgmt-ipv4": "172.30.100.150",
+        "cmd": "sleep infinity",
+        "exec": [
+          "ip link set eth1 up",
+          "ip address replace 10.64.10.10/24 dev eth1",
+          "ip route del default",
+          "ip route replace 10.64.0.0/16 via 10.64.10.1 dev eth1",
+          "iperf3 -s -B 10.64.10.10 -D"
+        ]
+      },
+      "nyc": {
+        "kind": "arista_ceos",
+        "image": "ceos:4.36.3M",
+        "mgmt-ipv4": "172.30.100.51",
+        "startup-config": "configs/abilene/nyc.cfg"
+      },
+      "h-nyc": {
+        "kind": "linux",
+        "image": "advnet-host:0.1",
+        "mgmt-ipv4": "172.30.100.151",
+        "cmd": "sleep infinity",
+        "exec": [
+          "ip link set eth1 up",
+          "ip address replace 10.64.11.10/24 dev eth1",
+          "ip route del default",
+          "ip route replace 10.64.0.0/16 via 10.64.11.1 dev eth1",
+          "iperf3 -s -B 10.64.11.10 -D"
+        ]
+      }
+    },
+    "links": [
+      {
+        "endpoints": [
+          "sea:eth3",
+          "h-sea:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "sva:eth4",
+          "h-sva:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "lax:eth3",
+          "h-lax:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "den:eth4",
+          "h-den:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "kcy:eth4",
+          "h-kcy:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "hou:eth4",
+          "h-hou:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "atl:eth4",
+          "h-atl:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "ind:eth4",
+          "h-ind:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "chi:eth3",
+          "h-chi:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "was:eth3",
+          "h-was:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "nyc:eth3",
+          "h-nyc:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "sea:eth1",
+          "sva:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "sea:eth2",
+          "den:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "sva:eth2",
+          "lax:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "sva:eth3",
+          "den:eth2"
+        ]
+      },
+      {
+        "endpoints": [
+          "lax:eth2",
+          "hou:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "den:eth3",
+          "kcy:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "kcy:eth2",
+          "hou:eth2"
+        ]
+      },
+      {
+        "endpoints": [
+          "kcy:eth3",
+          "ind:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "hou:eth3",
+          "atl:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "atl:eth2",
+          "was:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "atl:eth3",
+          "ind:eth2"
+        ]
+      },
+      {
+        "endpoints": [
+          "ind:eth3",
+          "chi:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "chi:eth2",
+          "nyc:eth1"
+        ]
+      },
+      {
+        "endpoints": [
+          "was:eth2",
+          "nyc:eth2"
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "sea-sva-congestion",
+  "objective": "optimization",
+  "objective_text": "Reduce maximum transit-link utilization under the same offered load; preserve delivered throughput, loss, and connectivity.",
+  "flow": {
+    "source": "sea",
+    "destination": "sva",
+    "seconds": 8,
+    "offered_mbps": 5
+  },
+  "capacities_mbps": {
+    "sea-sva": 2
+  }
+}

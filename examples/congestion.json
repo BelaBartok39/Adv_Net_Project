@@ -1,0 +1,75 @@
+{
+  "schema_version": "1",
+  "scenario_id": "synthetic-congestion-001",
+  "observed_at": "2026-10-21T22:01:23.535830+00:00",
+  "objective": "Reduce maximum transit-link utilization under the same offered load without harming connectivity, delivered throughput, or packet loss.",
+  "requirements": [
+    "Host A and Host B must reach each other in both directions.",
+    "Management traffic must remain isolated in the MGMT VRF.",
+    "OSPF changes must retain an allowed forwarding path between host subnets."
+  ],
+  "topology": [
+    "host-a:eth1 -- r1:Ethernet3",
+    "r1:Ethernet1 -- r2:Ethernet1",
+    "r1:Ethernet2 -- r3:Ethernet1",
+    "r2:Ethernet2 -- r4:Ethernet1",
+    "r3:Ethernet2 -- r4:Ethernet2",
+    "r4:Ethernet3 -- host-b:eth1"
+  ],
+  "devices": {
+    "r1": {
+      "interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3"
+      ],
+      "running_config": "! Arista EOS baseline for the four-router diamond\nhostname r1\n!\nvrf instance MGMT\n!\ninterface Management0\n   vrf MGMT\n   ip address 172.30.100.11/24\n   no shutdown\n!\nip routing\nip route vrf MGMT 0.0.0.0/0 172.30.100.1\n!\ninterface Ethernet1\n   description to-r2\n   no switchport\n   ip address 10.0.12.1/30\n   ip ospf area 0.0.0.0\n   no shutdown\n   ip ospf network point-to-point\n   ip ospf cost 10\n!\ninterface Ethernet2\n   description to-r3\n   no switchport\n   ip address 10.0.13.1/30\n   ip ospf area 0.0.0.0\n   no shutdown\n   ip ospf network point-to-point\n   ip ospf cost 100\n!\ninterface Ethernet3\n   description to-host-a\n   no switchport\n   ip address 10.10.1.1/24\n   ip ospf area 0.0.0.0\n   no shutdown\n!\nrouter ospf 1\n   router-id 1.1.1.1\n   passive-interface default\n   no passive-interface Ethernet1\n   no passive-interface Ethernet2\n!\nend\n",
+      "telemetry": {
+        "source": "synthetic fixture; not collected from live devices"
+      }
+    },
+    "r2": {
+      "interfaces": [
+        "Ethernet1",
+        "Ethernet2"
+      ],
+      "running_config": "! Arista EOS baseline for the four-router diamond\nhostname r2\n!\nvrf instance MGMT\n!\ninterface Management0\n   vrf MGMT\n   ip address 172.30.100.12/24\n   no shutdown\n!\nip routing\nip route vrf MGMT 0.0.0.0/0 172.30.100.1\n!\ninterface Ethernet1\n   description to-r1\n   no switchport\n   ip address 10.0.12.2/30\n   ip ospf area 0.0.0.0\n   no shutdown\n   ip ospf network point-to-point\n   ip ospf cost 10\n!\ninterface Ethernet2\n   description to-r4\n   no switchport\n   ip address 10.0.24.1/30\n   ip ospf area 0.0.0.0\n   no shutdown\n   ip ospf network point-to-point\n   ip ospf cost 10\n!\nrouter ospf 1\n   router-id 2.2.2.2\n   passive-interface default\n   no passive-interface Ethernet1\n   no passive-interface Ethernet2\n!\nend\n",
+      "telemetry": {
+        "source": "synthetic fixture; not collected from live devices"
+      }
+    },
+    "r3": {
+      "interfaces": [
+        "Ethernet1",
+        "Ethernet2"
+      ],
+      "running_config": "! Arista EOS baseline for the four-router diamond\nhostname r3\n!\nvrf instance MGMT\n!\ninterface Management0\n   vrf MGMT\n   ip address 172.30.100.13/24\n   no shutdown\n!\nip routing\nip route vrf MGMT 0.0.0.0/0 172.30.100.1\n!\ninterface Ethernet1\n   description to-r1\n   no switchport\n   ip address 10.0.13.2/30\n   ip ospf area 0.0.0.0\n   no shutdown\n   ip ospf network point-to-point\n   ip ospf cost 100\n!\ninterface Ethernet2\n   description to-r4\n   no switchport\n   ip address 10.0.34.1/30\n   ip ospf area 0.0.0.0\n   no shutdown\n   ip ospf network point-to-point\n   ip ospf cost 100\n!\nrouter ospf 1\n   router-id 3.3.3.3\n   passive-interface default\n   no passive-interface Ethernet1\n   no passive-interface Ethernet2\n!\nend\n",
+      "telemetry": {
+        "source": "synthetic fixture; not collected from live devices"
+      }
+    },
+    "r4": {
+      "interfaces": [
+        "Ethernet1",
+        "Ethernet2",
+        "Ethernet3"
+      ],
+      "running_config": "! Arista EOS baseline for the four-router diamond\nhostname r4\n!\nvrf instance MGMT\n!\ninterface Management0\n   vrf MGMT\n   ip address 172.30.100.14/24\n   no shutdown\n!\nip routing\nip route vrf MGMT 0.0.0.0/0 172.30.100.1\n!\ninterface Ethernet1\n   description to-r2\n   no switchport\n   ip address 10.0.24.2/30\n   ip ospf area 0.0.0.0\n   no shutdown\n   ip ospf network point-to-point\n   ip ospf cost 10\n!\ninterface Ethernet2\n   description to-r3\n   no switchport\n   ip address 10.0.34.2/30\n   ip ospf area 0.0.0.0\n   no shutdown\n   ip ospf network point-to-point\n   ip ospf cost 100\n!\ninterface Ethernet3\n   description to-host-b\n   no switchport\n   ip address 10.10.2.1/24\n   ip ospf area 0.0.0.0\n   no shutdown\n!\nrouter ospf 1\n   router-id 4.4.4.4\n   passive-interface default\n   no passive-interface Ethernet1\n   no passive-interface Ethernet2\n!\nend\n",
+      "telemetry": {
+        "source": "synthetic fixture; not collected from live devices"
+      }
+    }
+  },
+  "measurements": {
+    "source": "synthetic; not experimental results",
+    "offered_load_mbps": 12.0,
+    "r2_path_capacity_mbps": 10.0,
+    "r3_path_capacity_mbps": 100.0,
+    "r2_path_utilization": 0.96,
+    "r3_path_utilization": 0.12,
+    "host_a_to_b_reachable": true,
+    "host_b_to_a_reachable": true,
+    "rtt_ms": 25.0,
+    "loss_fraction": 0.02
+  }
+}

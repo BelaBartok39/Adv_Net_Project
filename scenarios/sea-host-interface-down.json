@@ -1,0 +1,22 @@
+{
+  "name": "sea-host-interface-down",
+  "objective": "repair",
+  "objective_text": "Restore all required host connectivity and OSPF adjacencies without degrading healthy performance.",
+  "fault": {
+    "outcome": "candidate",
+    "diagnosis": "Harness fault injection; not provided to the model.",
+    "evidence": [
+      "Private scenario definition."
+    ],
+    "changes": [
+      {
+        "device": "sea",
+        "interface": "Ethernet3",
+        "action": "set_interface_enabled",
+        "value": false
+      }
+    ],
+    "expected_effect": "Produce a reproducible impairment.",
+    "observation_requests": []
+  }
+}
