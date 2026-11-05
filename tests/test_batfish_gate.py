@@ -10,7 +10,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from advnet.batfish_gate import check, host_addresses, main
+from advnet.batfish_gate import check, host_addresses, main, model_config
 from scripts.build_diamond_snapshot import ROOT, build_snapshot, disable_interface
 
 
@@ -52,6 +52,20 @@ def trace_row(source, destination, hosts, routers):
 
 
 class DiamondSnapshotTests(unittest.TestCase):
+    def test_model_export_preserves_routing_and_only_excludes_exact_default_guards(self):
+        guards = ('system l1\n   unsupported speed action error\n'
+                  '   unsupported error-correction action error\n')
+        routing = 'interface Ethernet3\n   shutdown\n   ip address 10.10.1.1/24\n!\n'
+        text = '> show running-config\n' + guards + '!\n' + routing
+        modeled, excluded = model_config(text)
+        self.assertEqual(len(excluded), 2)
+        self.assertTrue(modeled.endswith(routing))
+        self.assertNotIn('\nsystem l1\n', modeled)
+        for unknown in (guards.replace('action error', 'action warn', 1),
+                        guards + '   module unsupported-setting\n'):
+            original = unknown + '!\n' + routing
+            self.assertEqual(model_config(original), (original, []))
+
     def test_host_a_down_changes_only_r1_host_interface_in_separate_snapshot(self):
         originals = {p: p.read_bytes() for p in (ROOT / 'labs/configs/diamond').glob('*.cfg')}
         with tempfile.TemporaryDirectory() as tmp:
@@ -188,6 +202,21 @@ class BatfishGateTests(unittest.TestCase):
             self.assertEqual(kw['headers'].ipProtocols, ['ICMP'])
             self.assertIs(kw['ignoreFilters'], False)
             self.assertEqual(kw['maxTraces'], 10000)
+
+    def test_normalized_model_does_not_modify_submitted_snapshot(self):
+        path = self.directory / 'configs/r1.cfg'
+        raw = ('> show running-config\nsystem l1\n   unsupported speed action error\n'
+               '   unsupported error-correction action error\n!\n' + path.read_text())
+        path.write_text(raw)
+        uploaded = []
+        def upload(directory, **kwargs):
+            uploaded.append((Path(directory) / 'configs/r1.cfg').read_text())
+        self.bf.init_snapshot.side_effect = upload
+        result = check(self.directory)
+        self.assertTrue(result['accepted'], result)
+        self.assertIn('r1.cfg', result['model_exclusions'])
+        self.assertEqual(path.read_text(), raw)
+        self.assertIn('! EOS physical guard (not modeled): system l1', uploaded[0])
 
     def test_invalid_candidate_dispositions_reject(self):
         for disposition in ('NO_ROUTE', 'DENIED_IN', 'LOOP', 'EXITS_NETWORK', 'UNKNOWN',

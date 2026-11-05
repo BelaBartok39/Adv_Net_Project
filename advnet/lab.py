@@ -67,7 +67,9 @@ class Lab:
             text = self.cli(node, 'show running-config', deadline)
             # Strip command metadata before the first actual EOS config line.
             lines = text.splitlines()
-            return node, '\n'.join(line for line in lines if not line.startswith(('! Command:', '! Time:'))) + '\n'
+            return node, '\n'.join(line for line in lines
+                                   if not line.startswith(('! Command:', '! Time:'))
+                                   and line.strip() != '> show running-config') + '\n'
         with ThreadPoolExecutor(max_workers=4) as pool:
             return dict(pool.map(one, self.routers))
 
@@ -134,7 +136,7 @@ class Lab:
         before = self.counters(deadline)
         start = time.monotonic()
         output = command(['docker','exec',self.prefix+self.routers[a]['host'],'iperf3','-c',self.routers[b]['host_ip'],
-                          '-B',self.routers[a]['host_ip'],'-u','-b',f'{flow["offered_mbps"]}M','-t',str(seconds),
+                          '-B',self.routers[a]['host_ip'],'-u','-l','1200','-b',f'{flow["offered_mbps"]}M','-t',str(seconds),
                           '-J','--get-server-output'],timeout=min(seconds+15,deadline.remaining()))
         elapsed = time.monotonic()-start
         after = self.counters(deadline)
@@ -142,8 +144,10 @@ class Lab:
         if data.get('error'):
             raise RuntimeError('Traffic generator failed: '+str(data['error']))
         server = data.get('server_output_json',{}).get('end',{})
-        received = server.get('sum_received') or server.get('sum')
-        if not received or received.get('sender') is True or 'lost_percent' not in received:
+        # A daemon started without -J returns server_output_text. iperf still
+        # includes the receiver's report in the client's end.sum_received.
+        received = server.get('sum_received') or server.get('sum') or data.get('end',{}).get('sum_received')
+        if not received or received.get('sender') is not False or 'lost_percent' not in received:
             raise ValueError('Receiver-side UDP results are missing')
         utilizations = {}
         for link in self.manifest['links']:
@@ -154,6 +158,7 @@ class Lab:
                     raise ValueError('Interface counter reset during measurement')
                 utilizations[f'{n}:{interface}'] = delta*8 / elapsed / (self.capacities[link['id']]*1e6)
         return {'source':a,'destination':b,'offered_mbps':flow['offered_mbps'],
+                'udp_datagram_bytes':1200,
                 'duration_seconds':elapsed,'received_mbps':received['bits_per_second']/1e6,
                 'loss_fraction':received['lost_percent']/100,
                 'link_utilization':utilizations,'max_link_utilization':max(utilizations.values()),

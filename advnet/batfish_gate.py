@@ -6,10 +6,38 @@ No approval is possible when initialization or any expected flow is missing.
 import json
 import os
 import sys
+import shutil
+import tempfile
 from ipaddress import IPv4Address
 from numbers import Integral
 from pathlib import Path
 from uuid import uuid4
+
+
+def model_config(text):
+    """Comment only CLI echo and the exact EOS default L1 guard block.
+
+    These guards reject unsupported physical speed/FEC configuration; they do not
+    set routing, interface addresses, shutdown state, or ACL policy. Unknown L1
+    commands remain untouched and must still fail the strict parser gate.
+    """
+    lines = text.splitlines(keepends=True)
+    exclusions = []
+    for index, line in enumerate(lines):
+        if line.strip() == '> show running-config':
+            lines[index] = '! EOS CLI echo: ' + line
+            exclusions.append('CLI command echo')
+        elif line.rstrip('\r\n') == 'system l1':
+            end = index + 1
+            while end < len(lines) and lines[end].startswith((' ', '\t')):
+                end += 1
+            if [v.strip() for v in lines[index + 1:end]] == [
+                'unsupported speed action error', 'unsupported error-correction action error'
+            ]:
+                for position in range(index, end):
+                    lines[position] = '! EOS physical guard (not modeled): ' + lines[position]
+                exclusions.append('Default unsupported-speed/FEC physical configuration guards')
+    return ''.join(lines), exclusions
 
 
 def host_addresses(manifest):
@@ -33,7 +61,21 @@ def host_addresses(manifest):
 
 def check(directory):
     try:
-        return _check(Path(directory))
+        # Preserve the submitted snapshot byte-for-byte. Only the temporary
+        # Batfish model input contains explicitly documented exclusions.
+        with tempfile.TemporaryDirectory(prefix='advnet-batfish-') as temporary:
+            model = Path(temporary) / 'snapshot'
+            shutil.copytree(Path(directory), model)
+            exclusions = {}
+            for path in (model / 'configs').glob('*.cfg'):
+                text, omitted = model_config(path.read_text())
+                if omitted:
+                    path.write_text(text)
+                    exclusions[path.name] = omitted
+            value = _check(model)
+            if exclusions:
+                value['model_exclusions'] = exclusions
+            return value
     except Exception as error:
         # Include the actual SDK/query/parser error in the machine-readable result.
         # An unsupported query, malformed response or unavailable server rejects.

@@ -35,7 +35,7 @@ def generate():
                     'mgmt-ipv4': inventory[r]['mgmt_ip'], 'startup-config': f'configs/abilene/{r}.cfg'}
         nodes[host] = {'kind': 'linux', 'image': 'advnet-host:0.1',
                        'mgmt-ipv4': f'172.30.100.{140+index}', 'cmd': 'sleep infinity',
-                       'exec': ['ip link set eth1 up', f'ip address replace 10.64.{index}.10/24 dev eth1',
+                       'exec': ['ip link set eth1 mtu 1500', 'ip link set eth1 up', f'ip address replace 10.64.{index}.10/24 dev eth1',
                                 'ip route del default', f'ip route replace 10.64.0.0/16 via 10.64.{index}.1 dev eth1',
                                 f'iperf3 -s -B 10.64.{index}.10 -D']}
         cfg = [f'hostname {r}', '!', 'vrf instance MGMT', '!', 'interface Management0',
