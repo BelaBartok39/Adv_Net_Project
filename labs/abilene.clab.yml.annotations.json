@@ -1,0 +1,166 @@
+{
+  "freeTextAnnotations": [],
+  "freeShapeAnnotations": [],
+  "trafficRateAnnotations": [],
+  "groupStyleAnnotations": [],
+  "networkNodeAnnotations": [],
+  "nodeAnnotations": [
+    {
+      "id": "sea",
+      "position": {
+        "x": 180,
+        "y": 20
+      }
+    },
+    {
+      "id": "h-sea",
+      "position": {
+        "x": 120,
+        "y": -140
+      }
+    },
+    {
+      "id": "sva",
+      "position": {
+        "x": 180,
+        "y": 180
+      }
+    },
+    {
+      "id": "h-sva",
+      "position": {
+        "x": 280,
+        "y": 20
+      }
+    },
+    {
+      "id": "lax",
+      "position": {
+        "x": 340,
+        "y": 240
+      }
+    },
+    {
+      "id": "h-lax",
+      "position": {
+        "x": 480,
+        "y": 120
+      }
+    },
+    {
+      "id": "den",
+      "position": {
+        "x": 340,
+        "y": 100
+      }
+    },
+    {
+      "id": "h-den",
+      "position": {
+        "x": 460,
+        "y": -20
+      }
+    },
+    {
+      "id": "kcy",
+      "position": {
+        "x": 480,
+        "y": 240
+      }
+    },
+    {
+      "id": "h-kcy",
+      "position": {
+        "x": 660,
+        "y": 180
+      }
+    },
+    {
+      "id": "hou",
+      "position": {
+        "x": 400,
+        "y": 380
+      }
+    },
+    {
+      "id": "h-hou",
+      "position": {
+        "x": 240,
+        "y": 460
+      }
+    },
+    {
+      "id": "atl",
+      "position": {
+        "x": 500,
+        "y": 520
+      }
+    },
+    {
+      "id": "h-atl",
+      "position": {
+        "x": 500,
+        "y": 700
+      }
+    },
+    {
+      "id": "ind",
+      "position": {
+        "x": 600,
+        "y": 380
+      }
+    },
+    {
+      "id": "h-ind",
+      "position": {
+        "x": 760,
+        "y": 340
+      }
+    },
+    {
+      "id": "chi",
+      "position": {
+        "x": 580,
+        "y": 560
+      }
+    },
+    {
+      "id": "h-chi",
+      "position": {
+        "x": 760,
+        "y": 560
+      }
+    },
+    {
+      "id": "was",
+      "position": {
+        "x": 600,
+        "y": 660
+      }
+    },
+    {
+      "id": "h-was",
+      "position": {
+        "x": 720,
+        "y": 760
+      }
+    },
+    {
+      "id": "nyc",
+      "position": {
+        "x": 420,
+        "y": 640
+      }
+    },
+    {
+      "id": "h-nyc",
+      "position": {
+        "x": 320,
+        "y": 780
+      }
+    }
+  ],
+  "edgeAnnotations": [],
+  "aliasEndpointAnnotations": [],
+  "viewerSettings": {}
+}

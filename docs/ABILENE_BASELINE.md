@@ -89,6 +89,117 @@ capture verified all 110 directed host pairs with zero ping loss and all expecte
 OSPF neighbors FULL. Mean RTT was 5.69 ms. This validates that capture, not a
 repair trial or congestion performance.
 
+### Restart after a host or Docker restart
+
+Reconcile the lab with Containerlab so missing data links are recreated:
+
+```bash
+sudo containerlab deploy -t labs/abilene.clab.yml
+```
+
+Starting the router containers with `docker start` alone can leave only `eth0`
+after a host restart. The routers need Containerlab's transit and host-facing
+links before EOS and the live collector can work. If reconciliation cannot
+recover the lab, recreate the containers from the topology (this restarts all
+nodes and regenerates configuration artifacts):
+
+```bash
+sudo containerlab deploy -t labs/abilene.clab.yml --reconfigure
+```
+
+The local Batfish container is named `advnet-batfish`:
+
+```bash
+sudo docker start advnet-batfish
+```
+
+To restart an already running Batfish service, use
+`sudo docker restart advnet-batfish`. If no container exists yet, create it with
+the `docker run` command in section 2. Only port 9996 is needed by this project.
+
+Earlier sudo invocations may have created root-owned experiment files. Restore
+the current user's ownership before running the visualizer or trials normally:
+
+```bash
+sudo chown -R "$(id -u):$(id -g)" runs
+```
+
+After the routers finish booting, verify the lab and start the visualizer:
+
+```bash
+sudo .venv/bin/python -m advnet.experiment check --seconds 300
+sudo .venv/bin/python -m advnet.visualizer
+```
+
+Open http://localhost:8765. If the visualizer is already running, stop its
+existing terminal process with Ctrl+C before starting another on the same port.
+
+### Batfish validation on November 5, 2026
+
+The coworker's `feature/diamond-batfish-gate` changes were fast-forwarded into
+the local checkout at `3d3b6fc`. Real Batfish accepted the Abilene source snapshot
+(11 routers, 11 modeled hosts, all 110 directed ICMP flows accepted on every
+modeled path). An offline candidate with Seattle's host-facing interface disabled
+was rejected: 20 directed host flows failed with NO_ROUTE or NEIGHBOR_UNREACHABLE.
+No fault was deployed to live routers. Reports are saved locally under
+`captures/abilene-validation-20261105/`.
+
+After link reconciliation, the Linux hosts still needed their declared data IPs,
+10.64.0.0/16 routes, and iperf3 servers restored. Their management default routes
+were removed as declared by the topology. A subsequent live sweep passed all
+110 directed pairs with zero ping loss, all expected OSPF neighbors FULL, and
+mean RTT 5.65 ms. The live visualizer collected 11 configurations and 14 backbone
+links. A Seattle-to-New-York traceroute reached its destination with unanswered
+intermediate TTLs; these gaps do not establish the intermediate forwarding path.
+
+Chromium checks passed path highlighting, timeline events, persistent probe
+errors/retry, replay/diffs, and mobile layout, with no browser errors. These
+checks do not establish a completed LLM repair trial. Live observer recording was
+subsequently confirmed working during the traffic test, with no telemetry errors.
+
+Captured EOS output included a CLI echo and an unsupported default `system l1`
+block. The collector now strips the exact command echo. The verifier preserves
+the submitted snapshot and uses a temporary model copy in which only that echo
+and the exact default pair `unsupported speed action error` / `unsupported
+error-correction action error` are commented. Exclusions are listed by file in
+the verifier response. These are [physical configuration guards](https://www.arista.com/jp/um-eos/eos-layer-1-cli-guard-relaxation),
+not interface speed settings. Physical guard policy is outside this routing
+model; operational links and connectivity are checked live. Unknown L1 commands,
+different guard actions, routing/ACL configuration, and interface shutdown state
+are not excluded. The strict parse and initialization checks remain active.
+
+To run the complete suite including the real Batfish controller test while
+keeping its evidence in a writable directory:
+
+```bash
+RUN_BATFISH_INTEGRATION=1 ADVNET_TEST_OUTPUT_DIR=captures/batfish-integration \
+  .venv/bin/python -m unittest discover -s tests
+```
+
+### Measured traffic smoke test
+
+On November 5, four sequential 12-second tests at a requested 5 Mbps ran between
+Seattle and New York. Received UDP rates were 4.998 Mbps forward and 4.999 Mbps
+reverse with zero packet loss. TCP received rates were 5.064 and 5.065 Mbps with
+zero reported retransmissions. Concurrent pings lost no packets. Afterward, all
+110 directed host checks passed and OSPF remained healthy. This is a bounded
+functional test, not a maximum-throughput benchmark or a congestion experiment.
+Evidence: `captures/traffic-tests/20261105T180758Z/result.json`.
+
+The tests exposed a host/router MTU mismatch: Containerlab's host data interface
+was 9500 bytes while EOS routing interfaces were 1500. Large iperf control/result
+messages failed. All host data MTUs now match EOS at 1500, and generated host
+startup commands explicitly set this value. UDP also explicitly uses 1200-byte
+datagrams. The collector accepts the receiver report in `end.sum_received` when
+the daemon returns text-mode server output, and rejects missing/sender reports.
+
+To generate another short visible flow (watch http://localhost:8765):
+
+```bash
+sudo docker exec clab-advnet-abilene-h-sea iperf3 \
+  -c 10.64.11.10 -B 10.64.1.10 -u -b 5M -l 1200 -t 30
+```
+
 ## 2. Validate Batfish and capture observations
 
 The included `advnet.batfish_gate` is a conservative initial adapter that your

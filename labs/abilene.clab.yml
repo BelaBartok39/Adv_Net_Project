@@ -19,6 +19,7 @@
         "mgmt-ipv4": "172.30.100.141",
         "cmd": "sleep infinity",
         "exec": [
+          "ip link set eth1 mtu 1500",
           "ip link set eth1 up",
           "ip address replace 10.64.1.10/24 dev eth1",
           "ip route del default",
@@ -38,6 +39,7 @@
         "mgmt-ipv4": "172.30.100.142",
         "cmd": "sleep infinity",
         "exec": [
+          "ip link set eth1 mtu 1500",
           "ip link set eth1 up",
           "ip address replace 10.64.2.10/24 dev eth1",
           "ip route del default",
@@ -57,6 +59,7 @@
         "mgmt-ipv4": "172.30.100.143",
         "cmd": "sleep infinity",
         "exec": [
+          "ip link set eth1 mtu 1500",
           "ip link set eth1 up",
           "ip address replace 10.64.3.10/24 dev eth1",
           "ip route del default",
@@ -76,6 +79,7 @@
         "mgmt-ipv4": "172.30.100.144",
         "cmd": "sleep infinity",
         "exec": [
+          "ip link set eth1 mtu 1500",
           "ip link set eth1 up",
           "ip address replace 10.64.4.10/24 dev eth1",
           "ip route del default",
@@ -95,6 +99,7 @@
         "mgmt-ipv4": "172.30.100.145",
         "cmd": "sleep infinity",
         "exec": [
+          "ip link set eth1 mtu 1500",
           "ip link set eth1 up",
           "ip address replace 10.64.5.10/24 dev eth1",
           "ip route del default",
@@ -114,6 +119,7 @@
         "mgmt-ipv4": "172.30.100.146",
         "cmd": "sleep infinity",
         "exec": [
+          "ip link set eth1 mtu 1500",
           "ip link set eth1 up",
           "ip address replace 10.64.6.10/24 dev eth1",
           "ip route del default",
@@ -133,6 +139,7 @@
         "mgmt-ipv4": "172.30.100.147",
         "cmd": "sleep infinity",
         "exec": [
+          "ip link set eth1 mtu 1500",
           "ip link set eth1 up",
           "ip address replace 10.64.7.10/24 dev eth1",
           "ip route del default",
@@ -152,6 +159,7 @@
         "mgmt-ipv4": "172.30.100.148",
         "cmd": "sleep infinity",
         "exec": [
+          "ip link set eth1 mtu 1500",
           "ip link set eth1 up",
           "ip address replace 10.64.8.10/24 dev eth1",
           "ip route del default",
@@ -171,6 +179,7 @@
         "mgmt-ipv4": "172.30.100.149",
         "cmd": "sleep infinity",
         "exec": [
+          "ip link set eth1 mtu 1500",
           "ip link set eth1 up",
           "ip address replace 10.64.9.10/24 dev eth1",
           "ip route del default",
@@ -190,6 +199,7 @@
         "mgmt-ipv4": "172.30.100.150",
         "cmd": "sleep infinity",
         "exec": [
+          "ip link set eth1 mtu 1500",
           "ip link set eth1 up",
           "ip address replace 10.64.10.10/24 dev eth1",
           "ip route del default",
@@ -209,6 +219,7 @@
         "mgmt-ipv4": "172.30.100.151",
         "cmd": "sleep infinity",
         "exec": [
+          "ip link set eth1 mtu 1500",
           "ip link set eth1 up",
           "ip address replace 10.64.11.10/24 dev eth1",
           "ip route del default",

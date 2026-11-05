@@ -234,7 +234,8 @@ class LiveTrialGateTests(unittest.TestCase):
     def test_real_trial_rejects_bad_candidate_without_deployment(self):
         from pybatfish.client.session import Session
 
-        directory = ROOT / 'runs' / ('diamond-trial-gate-' +
+        output_root = Path(os.environ.get('ADVNET_TEST_OUTPUT_DIR', str(ROOT / 'runs')))
+        directory = output_root / ('diamond-trial-gate-' +
                     datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ-') + uuid4().hex[:8])
         directory.mkdir(parents=True, exist_ok=False)
         trial_directory = directory / 'trial'

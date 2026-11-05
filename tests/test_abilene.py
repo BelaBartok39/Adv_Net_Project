@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from advnet.contracts import DeviceState, Observation, Proposal
 from advnet.eos import materialize
-from advnet.lab import Lab, command, full_neighbors
+from advnet.lab import Deadline, Lab, command, full_neighbors
 from advnet.trial import Trial, acceptable, snapshot
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -77,6 +77,27 @@ class FakeVerifier:
 
 
 class AbileneTests(unittest.TestCase):
+    def test_udp_uses_receiver_report_with_text_mode_server_and_safe_datagram_size(self):
+        lab=Lab(MANIFEST)
+        counters={n:{i:0 for i in r['transit_interfaces']} for n,r in MANIFEST['routers'].items()}
+        report={'end':{'sum_received':{'sender':False,'bits_per_second':4_900_000,'lost_percent':0.2}},
+                'server_output_text':'Text-mode server output'}
+        with patch.object(lab,'counters',return_value=counters), patch('advnet.lab.command',return_value=json.dumps(report)) as run:
+            result=lab.traffic({'source':'sea','destination':'nyc','seconds':3,'offered_mbps':5},Deadline(30))
+        self.assertEqual(result['received_mbps'],4.9)
+        self.assertEqual(result['loss_fraction'],0.002)
+        argv=run.call_args.args[0]
+        self.assertEqual(argv[argv.index('-l')+1],'1200')
+
+    def test_udp_does_not_substitute_sender_throughput_for_missing_receiver_report(self):
+        lab=Lab(MANIFEST)
+        counters={n:{i:0 for i in r['transit_interfaces']} for n,r in MANIFEST['routers'].items()}
+        for end in ({'sum_sent':{'sender':True,'bits_per_second':5_000_000,'lost_percent':0}},
+                    {'sum_received':{'sender':True,'bits_per_second':5_000_000,'lost_percent':0}}):
+            with self.subTest(end=end), patch.object(lab,'counters',return_value=counters), patch('advnet.lab.command',return_value=json.dumps({'end':end})):
+                with self.assertRaisesRegex(ValueError,'Receiver-side'):
+                    lab.traffic({'source':'sea','destination':'nyc','seconds':3,'offered_mbps':5},Deadline(30))
+
     def test_cli_starts_privileged_instead_of_repeating_command_option(self):
         lab=Lab(MANIFEST)
         with patch.object(lab,'execute',return_value='hostname sea\n') as execute:
