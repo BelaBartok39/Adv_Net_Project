@@ -18,15 +18,18 @@ def dump(path, value):
 
 
 def snapshot(directory, configs, manifest):
+    # Diamond lists its two hosts separately; Abilene keeps one on each router.
+    hosts = (manifest['hosts'] if 'hosts' in manifest else
+             {router['host']: router for router in manifest['routers'].values()})
     directory = Path(directory)
     (directory/'configs').mkdir(parents=True,exist_ok=True)
     (directory/'hosts').mkdir(exist_ok=True)
     for node,text in configs.items():
         (directory/'configs'/f'{node}.cfg').write_text(f'! device: {node} (cEOSLab, EOS-4.36.3M)\n'+text)
-    for router in manifest['routers'].values():
-        dump(directory/'hosts'/f'{router["host"]}.json',{
-            'hostname':router['host'], 'hostInterfaces':{'eth1':{
-                'name':'eth1','prefix':router['host_ip']+'/24','gateway':router['gateway']}}})
+    for name, host in hosts.items():
+        dump(directory/'hosts'/f'{name}.json',{
+            'hostname':name, 'hostInterfaces':{'eth1':{
+                'name':'eth1','prefix':host['host_ip']+'/24','gateway':host['gateway']}}})
     dump(directory/'intent.json',manifest)
     return directory
 
