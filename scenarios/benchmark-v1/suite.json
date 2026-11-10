@@ -1,0 +1,262 @@
+{
+  "version": 1,
+  "catalog_sha256": "8d3200e8cbcaa5393b42cf671bd5cbd069465370ed7ebd7539219b8b888387ba",
+  "cases": [
+    {
+      "name": "routine-host-sea-down",
+      "path": "routine-host-sea-down.json",
+      "family": "single_host",
+      "expected_route": "catalog"
+    },
+    {
+      "name": "routine-host-sva-down",
+      "path": "routine-host-sva-down.json",
+      "family": "single_host",
+      "expected_route": "catalog"
+    },
+    {
+      "name": "routine-host-lax-down",
+      "path": "routine-host-lax-down.json",
+      "family": "single_host",
+      "expected_route": "catalog"
+    },
+    {
+      "name": "routine-host-den-down",
+      "path": "routine-host-den-down.json",
+      "family": "single_host",
+      "expected_route": "catalog"
+    },
+    {
+      "name": "routine-host-kcy-down",
+      "path": "routine-host-kcy-down.json",
+      "family": "single_host",
+      "expected_route": "catalog"
+    },
+    {
+      "name": "routine-host-hou-down",
+      "path": "routine-host-hou-down.json",
+      "family": "single_host",
+      "expected_route": "catalog"
+    },
+    {
+      "name": "routine-host-atl-down",
+      "path": "routine-host-atl-down.json",
+      "family": "single_host",
+      "expected_route": "catalog"
+    },
+    {
+      "name": "routine-host-ind-down",
+      "path": "routine-host-ind-down.json",
+      "family": "single_host",
+      "expected_route": "catalog"
+    },
+    {
+      "name": "routine-host-chi-down",
+      "path": "routine-host-chi-down.json",
+      "family": "single_host",
+      "expected_route": "catalog"
+    },
+    {
+      "name": "routine-host-was-down",
+      "path": "routine-host-was-down.json",
+      "family": "single_host",
+      "expected_route": "catalog"
+    },
+    {
+      "name": "routine-host-nyc-down",
+      "path": "routine-host-nyc-down.json",
+      "family": "single_host",
+      "expected_route": "catalog"
+    },
+    {
+      "name": "backbone-sea-den-down",
+      "path": "backbone-sea-den-down.json",
+      "family": "backbone_shutdown",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "backbone-lax-hou-down",
+      "path": "backbone-lax-hou-down.json",
+      "family": "backbone_shutdown",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "backbone-kcy-ind-down",
+      "path": "backbone-kcy-ind-down.json",
+      "family": "backbone_shutdown",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "backbone-was-nyc-down",
+      "path": "backbone-was-nyc-down.json",
+      "family": "backbone_shutdown",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "ospf-area-sea-sva",
+      "path": "ospf-area-sea-sva.json",
+      "family": "ospf_area",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "ospf-area-den-kcy",
+      "path": "ospf-area-den-kcy.json",
+      "family": "ospf_area",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "ospf-area-hou-atl",
+      "path": "ospf-area-hou-atl.json",
+      "family": "ospf_area",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "ospf-area-chi-nyc",
+      "path": "ospf-area-chi-nyc.json",
+      "family": "ospf_area",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "multiple-hosts-sea-nyc",
+      "path": "multiple-hosts-sea-nyc.json",
+      "family": "multiple_hosts",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "multiple-hosts-lax-was",
+      "path": "multiple-hosts-lax-was.json",
+      "family": "multiple_hosts",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "multiple-hosts-hou-ind-chi",
+      "path": "multiple-hosts-hou-ind-chi.json",
+      "family": "multiple_hosts",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "compound-sea-host-and-backbone",
+      "path": "compound-sea-host-and-backbone.json",
+      "family": "compound",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "compound-nyc-host-and-ospf",
+      "path": "compound-nyc-host-and-ospf.json",
+      "family": "compound",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "compound-lax-host-and-remote-ospf",
+      "path": "compound-lax-host-and-remote-ospf.json",
+      "family": "compound",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "isolate-router-sea",
+      "path": "isolate-router-sea.json",
+      "family": "router_isolation",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "isolate-router-hou",
+      "path": "isolate-router-hou.json",
+      "family": "router_isolation",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "congestion-sea-sva",
+      "path": "congestion-sea-sva.json",
+      "family": "congestion",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "congestion-hou-atl",
+      "path": "congestion-hou-atl.json",
+      "family": "congestion",
+      "expected_route": "escalate"
+    },
+    {
+      "name": "congestion-chi-nyc",
+      "path": "congestion-chi-nyc.json",
+      "family": "congestion",
+      "expected_route": "escalate"
+    }
+  ],
+  "profiles": {
+    "all": [
+      "routine-host-sea-down",
+      "routine-host-sva-down",
+      "routine-host-lax-down",
+      "routine-host-den-down",
+      "routine-host-kcy-down",
+      "routine-host-hou-down",
+      "routine-host-atl-down",
+      "routine-host-ind-down",
+      "routine-host-chi-down",
+      "routine-host-was-down",
+      "routine-host-nyc-down",
+      "backbone-sea-den-down",
+      "backbone-lax-hou-down",
+      "backbone-kcy-ind-down",
+      "backbone-was-nyc-down",
+      "ospf-area-sea-sva",
+      "ospf-area-den-kcy",
+      "ospf-area-hou-atl",
+      "ospf-area-chi-nyc",
+      "multiple-hosts-sea-nyc",
+      "multiple-hosts-lax-was",
+      "multiple-hosts-hou-ind-chi",
+      "compound-sea-host-and-backbone",
+      "compound-nyc-host-and-ospf",
+      "compound-lax-host-and-remote-ospf",
+      "isolate-router-sea",
+      "isolate-router-hou",
+      "congestion-sea-sva",
+      "congestion-hou-atl",
+      "congestion-chi-nyc"
+    ],
+    "routine": [
+      "routine-host-sea-down",
+      "routine-host-sva-down",
+      "routine-host-lax-down",
+      "routine-host-den-down",
+      "routine-host-kcy-down",
+      "routine-host-hou-down",
+      "routine-host-atl-down",
+      "routine-host-ind-down",
+      "routine-host-chi-down",
+      "routine-host-was-down",
+      "routine-host-nyc-down"
+    ],
+    "escalation": [
+      "backbone-sea-den-down",
+      "backbone-lax-hou-down",
+      "backbone-kcy-ind-down",
+      "backbone-was-nyc-down",
+      "ospf-area-sea-sva",
+      "ospf-area-den-kcy",
+      "ospf-area-hou-atl",
+      "ospf-area-chi-nyc",
+      "multiple-hosts-sea-nyc",
+      "multiple-hosts-lax-was",
+      "multiple-hosts-hou-ind-chi",
+      "compound-sea-host-and-backbone",
+      "compound-nyc-host-and-ospf",
+      "compound-lax-host-and-remote-ospf",
+      "isolate-router-sea",
+      "isolate-router-hou",
+      "congestion-sea-sva",
+      "congestion-hou-atl",
+      "congestion-chi-nyc"
+    ],
+    "smoke": [
+      "routine-host-sea-down",
+      "backbone-sea-den-down",
+      "ospf-area-hou-atl",
+      "multiple-hosts-sea-nyc",
+      "compound-sea-host-and-backbone",
+      "congestion-sea-sva"
+    ]
+  }
+}

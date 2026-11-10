@@ -20,21 +20,29 @@ def main():
     parser.add_argument("--mock-probability", type=float, default=0.95)
     parser.add_argument("--mock-proposal", type=Path, default=Path("examples/mock-proposal.json"))
     parser.add_argument("--without-jev", action="store_true")
+    parser.add_argument("--force-escalation", action="store_true", help="Controlled overhead test: call Jev, then always call the LLM")
     parser.add_argument("--threshold", type=float, default=0.9)
     parser.add_argument("--feedback", type=Path, help="JSON array of feedback from earlier attempts")
     parser.add_argument("--attempt", type=int, choices=range(1, 6), default=1)
-    parser.add_argument("--jev-model", default=os.environ.get("JEV_MODEL", "jev-latest"))
-    parser.add_argument("--llm-provider", choices=["openai", "anthropic", "compatible"], default="openai")
+    parser.add_argument("--sysone-model", "--jev-model", dest="sysone_model", default=os.environ.get("SYSONE_MODEL"))
+    parser.add_argument("--jev-timeout", type=float, default=10, help="Jev request timeout before fallback to LLM")
+    parser.add_argument("--llm-provider", choices=["openrouter", "compatible"], default="openrouter")
     parser.add_argument("--llm-model", default=os.environ.get("LLM_MODEL"))
-    parser.add_argument("--base-url", default=os.environ.get("LLM_BASE_URL"))
+    parser.add_argument("--base-url", default=os.environ.get("LLM_BASE_URL", "https://openrouter.ai/api/v1"))
     parser.add_argument("--timeout", type=float, default=60, help="Per SDK request timeout; not a trial deadline")
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--log", type=Path, default=Path("runs/decisions.jsonl"))
     args = parser.parse_args()
-    if args.timeout <= 0 or args.max_tokens < 1:
+    if args.without_jev and args.force_escalation:
+        parser.error('--force-escalation requires Jev screening')
+    if args.timeout <= 0 or args.jev_timeout <= 0 or args.max_tokens < 1:
         parser.error("timeout and max-tokens must be positive")
     if args.mode == "live" and not args.llm_model:
         parser.error("Live mode requires an exact --llm-model ID (or LLM_MODEL)")
+    if args.mode == "live" and not os.environ.get("OPEN_ROUTER_KEY"):
+        parser.error("Live mode requires OPEN_ROUTER_KEY")
+    if args.mode == "live" and not args.without_jev and not args.sysone_model:
+        parser.error("Jev mode requires --sysone-model or SYSONE_MODEL")
     # Check logging before making a potentially billable provider request.
     try:
         args.log.parent.mkdir(parents=True, exist_ok=True)
@@ -57,14 +65,15 @@ def main():
             screener = MockJev(args.mock_route, args.mock_probability)
             llm = MockLLM(json.loads(args.mock_proposal.read_text()))
         else:
-            screener = Jev(args.jev_model, args.timeout)
+            screener = None if args.without_jev else Jev(args.sysone_model, args.jev_timeout)
             llm = LLM(args.llm_provider, args.llm_model, args.timeout, args.max_tokens, args.base_url)
-        engine = DecisionEngine(None if args.without_jev else screener, llm, catalog, args.threshold)
+        engine = DecisionEngine(None if args.without_jev else screener, llm, catalog, args.threshold,args.force_escalation)
         result = engine.decide(observation, feedback, args.attempt)
         result["mode"] = args.mode
         result["mock"] = args.mode == "mock"
-        result["requested_models"] = {"jev": None if args.without_jev else args.jev_model,
+        result["requested_models"] = {"sysone": None if args.without_jev else args.sysone_model,
                                       "llm": args.llm_model}
+        result["system_one_enabled"] = not args.without_jev
     except (ValueError, OSError) as error:
         # No payloads/exception strings: configuration text or SDK errors may contain secrets.
         print(json.dumps({"status": "input_error", "error_type": type(error).__name__}), file=sys.stderr)

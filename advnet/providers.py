@@ -1,5 +1,7 @@
 """Optional SDK adapters. No SDK imports or credentials are needed in mock mode."""
 import json
+import math
+import os
 from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Callable
@@ -27,7 +29,9 @@ class Jev:
         from typesafe_sdk import Choice, RetryPolicy, TypeSafeClient
 
         def call():
-            with TypeSafeClient(timeout=self.timeout, retry=RetryPolicy(max_retries=0)) as client:
+            with TypeSafeClient(api_key=os.environ["OPEN_ROUTER_KEY"],
+                                base_url="https://openrouter.ai/api", compression=False,
+                                timeout=self.timeout, retry=RetryPolicy(max_retries=0)) as client:
                 response = client.system_one(
                     model=self.model, state=state,
                     questions={"route": Choice(
@@ -42,7 +46,14 @@ class Jev:
                     )},
                 )
             answer = response.choices["route"]
-            return answer.model_dump(mode="json"), response.model, response.usage.model_dump(mode="json")
+            usage = response.usage.model_dump(mode="json")
+            # SDK 0.7.x ignores gateway-specific usage.cost when parsing Usage.
+            # Recover only this numeric billing field, never log the raw response.
+            raw = response.raw_http_response.json().get("usage", {})
+            cost = raw.get("cost") if isinstance(raw, dict) else None
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool) and math.isfinite(cost) and cost >= 0:
+                usage["cost"] = cost
+            return answer.model_dump(mode="json"), response.model, usage
         return timed(call, self.model)
 
 
@@ -55,42 +66,20 @@ class LLM:
         prompt = json.dumps(state, sort_keys=True)
 
         def call():
-            if self.provider == "anthropic":
-                from anthropic import Anthropic
-                with Anthropic(timeout=self.timeout, max_retries=0) as client:
-                    response = client.messages.create(
-                        model=self.model, max_tokens=self.max_tokens, system=system,
-                        messages=[{"role": "user", "content": prompt}],
-                    )
-                if response.stop_reason != "end_turn":
-                    raise ValueError(f"LLM did not finish normally: {response.stop_reason}")
-                text = "".join(b.text for b in response.content if b.type == "text")
-            else:
-                from openai import OpenAI
-                options = {"timeout": self.timeout, "max_retries": 0}
-                if self.provider == "compatible":
-                    if not self.base_url:
-                        raise ValueError("compatible provider requires --base-url")
-                    options["base_url"] = self.base_url
-                    # OPENAI_API_KEY is read by the SDK. Use a dummy value for local servers.
-                with OpenAI(**options) as client:
-                    if self.provider == "openai":
-                        response = client.responses.create(
-                            model=self.model, instructions=system, input=prompt,
-                            max_output_tokens=self.max_tokens, store=False,
-                        )
-                        if response.status != "completed":
-                            raise ValueError(f"LLM did not finish normally: {response.status}")
-                        text = response.output_text
-                    else:
-                        response = client.chat.completions.create(
-                            model=self.model, max_tokens=self.max_tokens,
-                            messages=[{"role": "system", "content": system},
-                                      {"role": "user", "content": prompt}],
-                        )
-                        if response.choices[0].finish_reason != "stop":
-                            raise ValueError("LLM response was incomplete or requested tools")
-                        text = response.choices[0].message.content
+            from openai import OpenAI
+            if self.provider not in {"openrouter", "compatible"}:
+                raise ValueError("Use the openrouter provider (compatible is an alias)")
+            with OpenAI(api_key=os.environ["OPEN_ROUTER_KEY"],
+                        base_url=self.base_url or "https://openrouter.ai/api/v1",
+                        timeout=self.timeout, max_retries=0) as client:
+                response = client.chat.completions.create(
+                    model=self.model, max_tokens=self.max_tokens,
+                    messages=[{"role": "system", "content": system},
+                              {"role": "user", "content": prompt}],
+                )
+                if not response.choices or response.choices[0].finish_reason != "stop":
+                    raise ValueError("LLM response was incomplete or requested tools")
+                text = response.choices[0].message.content
             return text, response.model, response.usage.model_dump(mode="json") if response.usage else {}
         return timed(call, self.model)
 

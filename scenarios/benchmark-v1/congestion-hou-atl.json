@@ -1,0 +1,44 @@
+{
+  "name": "congestion-hou-atl",
+  "objective": "optimization",
+  "objective_text": "Reduce maximum transit-link utilization under unchanged traffic load; preserve delivered throughput, loss, connectivity, and expected OSPF adjacencies.",
+  "evaluation": {
+    "family": "congestion",
+    "expected_route": "escalate",
+    "expected_actions": [],
+    "catalog_sha256": "8d3200e8cbcaa5393b42cf671bd5cbd069465370ed7ebd7539219b8b888387ba",
+    "explanation": "No single action in the frozen host-interface catalog repairs the complete impairment."
+  },
+  "reference_repair": {
+    "outcome": "candidate",
+    "diagnosis": "Private harness definition; never model input.",
+    "evidence": [
+      "Private experiment control."
+    ],
+    "changes": [
+      {
+        "device": "hou",
+        "interface": "Ethernet3",
+        "action": "set_ospf_cost",
+        "value": 1000
+      },
+      {
+        "device": "atl",
+        "interface": "Ethernet1",
+        "action": "set_ospf_cost",
+        "value": 1000
+      }
+    ],
+    "expected_effect": "Create or reverse the controlled impairment.",
+    "observation_requests": []
+  },
+  "flow": {
+    "source": "hou",
+    "destination": "atl",
+    "seconds": 12,
+    "offered_mbps": 5
+  },
+  "capacities_mbps": {
+    "hou-atl": 2
+  }
+}

@@ -11,6 +11,9 @@ from advnet.contracts import DeviceState, Observation, Proposal
 from advnet.eos import materialize
 from advnet.lab import Deadline, Lab, command, full_neighbors
 from advnet.trial import Trial, acceptable, snapshot
+from advnet.catalog import experiment_catalog
+from advnet.pipeline import DecisionEngine
+from advnet.providers import MockJev, MockLLM
 
 ROOT=Path(__file__).resolve().parents[1]
 MANIFEST=json.loads((ROOT/'topologies/abilene.json').read_text())
@@ -77,6 +80,34 @@ class FakeVerifier:
 
 
 class AbileneTests(unittest.TestCase):
+    def test_system_one_shortcut_uses_same_verifier_and_live_acceptance(self):
+        class ScreenedDecision:
+            system_one_enabled=True
+            settings={'system_one':'jev'}
+            def decide(self,observation,feedback,attempt,deadline):
+                return DecisionEngine(MockJev('enable_host_sea'),None,experiment_catalog(MANIFEST)).decide(observation,feedback,attempt)
+        with tempfile.TemporaryDirectory() as tmp:
+            verifier=FakeVerifier()
+            lab,result=self.trial(tmp,ScreenedDecision(),verifier)
+            self.assertTrue(result['success'])
+            self.assertTrue(result['system_one_enabled'])
+            self.assertEqual(result['mode'],'jev_llm')
+            self.assertEqual(result['inference_metrics']['llm_calls'],0)
+            self.assertEqual(result['inference_metrics']['jev_calls'],1)
+            self.assertEqual(verifier.calls,2)
+            self.assertIn('verify_candidate',[e['stage'] for e in result['events']])
+
+    def test_system_one_candidate_rejection_never_deploys(self):
+        class ScreenedDecision:
+            system_one_enabled=True
+            def decide(self,observation,feedback,attempt,deadline):
+                return DecisionEngine(MockJev('enable_host_sea'),None,experiment_catalog(MANIFEST)).decide(observation,feedback,attempt)
+        with tempfile.TemporaryDirectory() as tmp:
+            lab,result=self.trial(tmp,ScreenedDecision(),FakeVerifier(True),attempts=1)
+            self.assertFalse(result['success'])
+            self.assertNotIn('deploy',[e['stage'] for e in result['events']])
+            self.assertTrue(lab.measure()['all_reachable'])
+
     def test_udp_uses_receiver_report_with_text_mode_server_and_safe_datagram_size(self):
         lab=Lab(MANIFEST)
         counters={n:{i:0 for i in r['transit_interfaces']} for n,r in MANIFEST['routers'].items()}
