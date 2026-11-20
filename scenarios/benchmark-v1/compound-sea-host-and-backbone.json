@@ -1,0 +1,58 @@
+{
+  "name": "compound-sea-host-and-backbone",
+  "objective": "repair",
+  "objective_text": "Restore all required host connectivity and expected OSPF adjacencies while preserving healthy performance.",
+  "evaluation": {
+    "family": "compound",
+    "expected_route": "escalate",
+    "expected_actions": [],
+    "catalog_sha256": "8d3200e8cbcaa5393b42cf671bd5cbd069465370ed7ebd7539219b8b888387ba",
+    "explanation": "No single action in the frozen host-interface catalog repairs the complete impairment."
+  },
+  "reference_repair": {
+    "outcome": "candidate",
+    "diagnosis": "Private harness definition; never model input.",
+    "evidence": [
+      "Private experiment control."
+    ],
+    "changes": [
+      {
+        "device": "sea",
+        "interface": "Ethernet3",
+        "action": "set_interface_enabled",
+        "value": true
+      },
+      {
+        "device": "sea",
+        "interface": "Ethernet2",
+        "action": "set_interface_enabled",
+        "value": true
+      }
+    ],
+    "expected_effect": "Create or reverse the controlled impairment.",
+    "observation_requests": []
+  },
+  "fault": {
+    "outcome": "candidate",
+    "diagnosis": "Private harness definition; never model input.",
+    "evidence": [
+      "Private experiment control."
+    ],
+    "changes": [
+      {
+        "device": "sea",
+        "interface": "Ethernet3",
+        "action": "set_interface_enabled",
+        "value": false
+      },
+      {
+        "device": "sea",
+        "interface": "Ethernet2",
+        "action": "set_interface_enabled",
+        "value": false
+      }
+    ],
+    "expected_effect": "Create or reverse the controlled impairment.",
+    "observation_requests": []
+  }
+}

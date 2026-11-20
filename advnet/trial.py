@@ -9,8 +9,11 @@ from pathlib import Path
 from uuid import uuid4
 
 from .contracts import Feedback, Proposal
+from .catalog import catalog_data, catalog_hash
 from .eos import candidate_configs
 from .lab import Deadline
+from .metrics import inference_metrics
+from .scenarios import routing_evaluation
 
 
 def dump(path, value):
@@ -56,22 +59,44 @@ class ProcessVerifier:
 
 
 class DecisionProcess:
-    def __init__(self, provider, model, directory, base_url=None, max_tokens=4096):
+    def __init__(self, provider, model, directory, base_url=None, max_tokens=4096, *,
+                 system_one='off',sysone_model=None,threshold=0.9,jev_timeout=10,catalog=None,force_escalation=False):
+        if system_one not in ('off','jev'):
+            raise ValueError('Unknown System One mode')
         self.provider,self.model,self.directory = provider,model,Path(directory)
         self.base_url,self.max_tokens=base_url,max_tokens
+        self.system_one_enabled=system_one=='jev'
+        if force_escalation and not self.system_one_enabled:
+            raise ValueError('Forced escalation requires Jev')
+        self.force_escalation=force_escalation
+        if self.system_one_enabled and not sysone_model:
+            raise ValueError('Jev mode requires a separate System One model ID')
+        self.sysone_model,self.threshold,self.jev_timeout=sysone_model,threshold,jev_timeout
+        self.catalog=catalog or {}
+        self.settings={'system_one':system_one,'sysone_model':sysone_model if self.system_one_enabled else None,
+                       'forced_escalation':force_escalation,
+                       'jev_threshold':threshold,'jev_timeout_seconds':jev_timeout,
+                       'llm_provider':provider,'llm_model':model,'max_tokens':max_tokens,
+                       'catalog_sha256':catalog_hash(self.catalog),'catalog_size':len(self.catalog)}
 
     def decide(self, observation, feedback, attempt, deadline):
         root = self.directory/f'attempt-{attempt}'
         root.mkdir(exist_ok=True)
         (root/'observation.json').write_text(observation.model_dump_json(indent=2))
         dump(root/'feedback.json',[f.model_dump(mode='json') for f in feedback])
-        empty = self.directory/'empty-catalog.json'
-        dump(empty,{})
-        argv = [sys.executable,'-m','advnet',str(root/'observation.json'),'--mode','live','--without-jev',
-                '--catalog',str(empty),'--llm-provider',self.provider,'--llm-model',self.model,
+        catalog = self.directory/'catalog.json'
+        dump(catalog,catalog_data(self.catalog))
+        argv = [sys.executable,'-m','advnet',str(root/'observation.json'),'--mode','live',
+                '--catalog',str(catalog),'--llm-provider',self.provider,'--llm-model',self.model,
                 '--attempt',str(attempt),'--feedback',str(root/'feedback.json'),
                 '--timeout',str(min(60,deadline.remaining())), '--max-tokens',str(self.max_tokens),
                 '--log',str(root/'model-calls.jsonl')]
+        if self.system_one_enabled:
+            argv += ['--sysone-model',self.sysone_model,'--threshold',str(self.threshold),'--jev-timeout',str(self.jev_timeout)]
+            if self.force_escalation:
+                argv += ['--force-escalation']
+        else:
+            argv += ['--without-jev']
         if self.base_url:
             argv += ['--base-url',self.base_url]
         result = subprocess.run(argv,capture_output=True,text=True,timeout=deadline.remaining())
@@ -103,11 +128,12 @@ def acceptable(current, healthy, impaired, objective):
 
 
 class Trial:
-    def __init__(self, lab, decision, verifier, directory, max_attempts=5, seconds=900):
+    def __init__(self, lab, decision, verifier, directory, max_attempts=5, seconds=900, *, baseline_configs=None):
         if not 1<=max_attempts<=5:
             raise ValueError('max_attempts must be 1..5')
         self.lab,self.decision,self.verifier,self.directory=lab,decision,verifier,Path(directory)
         self.max_attempts,self.seconds=max_attempts,seconds
+        self.baseline_configs=baseline_configs
         self.directory.mkdir(parents=True,exist_ok=False)
         self.events=[]
 
@@ -135,7 +161,12 @@ class Trial:
 
     def run(self,scenario):
         identifier='trial-'+uuid4().hex
-        result={'trial_id':identifier,'mode':'llm_only','system_one_enabled':False,'success':False,
+        system_one_enabled=getattr(self.decision,'system_one_enabled',False)
+        result={'trial_id':identifier,'mode':'jev_llm' if system_one_enabled else 'llm_only',
+                'system_one_enabled':system_one_enabled,'decision_settings':getattr(self.decision,'settings',{}),
+                'evaluation':scenario.get('evaluation',{}),
+                'baseline_reset_requested':self.baseline_configs is not None,'baseline_reset_completed':False,
+                'decisions':[],'success':False,
                 'scenario':scenario['name'],'attempts':0,'fault_to_acceptance_seconds':None,
                 'max_attempts':self.max_attempts,'time_cap_seconds':self.seconds,
                 'cost_usd':None,'model_calls':[],'cleanup_succeeded':False}
@@ -148,6 +179,12 @@ class Trial:
         feedback=[]
         seen=set()
         try:
+            if self.baseline_configs is not None:
+                dump(self.directory/'baseline-source-configs.json',self.baseline_configs)
+                result['baseline_source_sha256']=hashlib.sha256(json.dumps(self.baseline_configs,sort_keys=True).encode()).hexdigest()
+                self.stage('restore_baseline',lambda:self.lab.replace(self.baseline_configs,self.directory/'baseline-reset',setup))
+                self.stage('baseline_capacities',lambda:self.lab.shape({},setup))
+                result['baseline_reset_completed']=True
             healthy_configs=self.stage('checkpoint_healthy',lambda:self.lab.configs(setup))
             dump(self.directory/'healthy-configs.json',healthy_configs)
             if scenario.get('flow'):
@@ -191,9 +228,12 @@ class Trial:
                 root=self.directory/f'attempt-{attempt}'
                 root.mkdir(exist_ok=True)
                 observation=self.stage('observe',lambda:self.lab.observe(identifier,impaired if attempt==1 else last_measurement,deadline,scenario['objective_text']))
-                response=self.stage('llm_decision',lambda:self.decision.decide(observation,feedback,attempt,deadline))
+                response=self.stage('system_one_decision' if system_one_enabled else 'llm_decision',
+                                    lambda:self.decision.decide(observation,feedback,attempt,deadline))
                 dump(root/'decision.json',response)
                 result['model_calls'].extend(response.get('calls',[]))
+                result['decisions'].append({'attempt':attempt,'status':response.get('status'),
+                    'screening':response.get('screening',{}),'selected_action':response.get('selected_action')})
                 decision_id=response.get('decision_id',identifier+f'-{attempt}')
                 if response.get('status')=='decision_error' or not response.get('proposal'):
                     feedback.append(Feedback(attempt=attempt,candidate_id=decision_id,stage='decision',accepted=False,details=['Decision did not return a valid candidate.']))
@@ -252,6 +292,8 @@ class Trial:
             result['error']=str(error)[:1000] if isinstance(error,(ValueError,TimeoutError)) else 'See stage logs and device state.'
         finally:
             try:
+                if self.baseline_configs is not None and not result['baseline_reset_completed']:
+                    raise RuntimeError('Baseline restoration did not complete; stop before another trial')
                 if healthy_configs and not result['success'] and started is not None:
                     self.stage('harness_reset_not_a_repair',lambda:self.lab.replace(healthy_configs,self.directory/'reset',Deadline(180)))
                     if self.lab.configs(Deadline(60))!=healthy_configs:
@@ -271,6 +313,9 @@ class Trial:
                 result['success']=False
                 result['fault_to_acceptance_seconds']=None
             result['events']=self.events
+            result['inference_metrics']=inference_metrics(result['model_calls'])
+            result['routing_evaluation']=routing_evaluation(result)
+            result['cost_usd']=result['inference_metrics']['cost_usd'] if not result.get('error_type') else None
             if started is not None:
                 result['trial_elapsed_seconds']=time.monotonic()-started
             dump(self.directory/'result.json',result)

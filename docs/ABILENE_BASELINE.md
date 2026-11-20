@@ -1,8 +1,8 @@
 # Abilene LLM-only baseline
 
-The next experiment is the proposal's closed loop without a System One model.
-Establish repeatable network and repair measurements first; introduce Jev or Kev
-only after this baseline works. Existing screening code is inactive in these trials.
+The LLM-only closed loop is the baseline for [optional Jev screening](SYSTEM_ONE.md).
+Use `--system-one off` (default) for the baseline and `--system-one jev` for the
+assisted arm. Both arms receive the same inventory-based action catalog.
 
 ## Topology and provenance
 
@@ -238,13 +238,13 @@ This ignored runtime directory is writable by the normal user even when old
 files in `runs/` were created with sudo. The empty action catalog prevents the
 standalone CLI from loading diamond-specific actions.
 
-In the terminal containing your OpenRouter key in `OPENAI_API_KEY`, run without
+In the terminal containing your OpenRouter key in `OPEN_ROUTER_KEY`, run without
 sudo:
 
 ```bash
 .venv/bin/python -m advnet captures/abilene-live/observation.json \
   --catalog captures/abilene-live/empty-catalog.json \
-  --mode live --without-jev --llm-provider compatible \
+  --mode live --without-jev --llm-provider openrouter \
   --base-url https://openrouter.ai/api/v1 --llm-model openrouter/free \
   --timeout 120 --max-tokens 4096 \
   --log captures/abilene-live/model-calls.jsonl
@@ -266,12 +266,12 @@ Refresh the observation before later model calls (Docker access required):
 
 ## 3. Run one LLM-only repair trial
 
-Export OPENAI_API_KEY in your shell and set LLM_MODEL to an exact available model
+Export OPEN_ROUTER_KEY in your shell and set LLM_MODEL to an exact available model
 ID. Do not put keys in commands, Git, or chat. Use your normal secret manager or
 an interactive shell prompt. The CLI does not automatically load .env files.
 
 ```bash
-sudo --preserve-env=OPENAI_API_KEY,LLM_MODEL,BATFISH_HOST \
+sudo --preserve-env=OPEN_ROUTER_KEY,LLM_MODEL,BATFISH_HOST \
   .venv/bin/python -m advnet.experiment run \
   --scenario scenarios/sea-host-interface-down.json --model "$LLM_MODEL"
 ```
@@ -283,7 +283,10 @@ The runner performs:
 2. Start a monotonic trial deadline and inject a known fault. The scenario and
    reference injection remain private harness data, never model context.
 3. Confirm the intended impairment exists and collect fresh observations.
-4. Call the LLM with an EMPTY action catalog and NO Jev/Kev call. Validate the
+4. With `--system-one off`, call the LLM with the shared action catalog and no
+   Jev call. With `--system-one jev`, screen first and fall back to the LLM as
+   needed. An explicit empty `--catalog` JSON object reproduces the historical
+   baseline inputs. Validate the
    typed patch against observed device/interface names. Reject repeated patches.
 5. Materialize the exact candidate configurations and submit them to the verifier.
    Rejections return detailed feedback; unapproved candidates never deploy.
@@ -338,8 +341,9 @@ overhead should also be characterized before interpreting small differences.
 
 Use `--attempts 1` for a single-shot verified baseline and `--attempts 5` for the
 iterative verified loop, holding all other settings constant. This is not an
-exact reproduction of either cited paper. An unverified-agent ablation and
-Jev/Kev are deferred until the verified LLM-only loop is measured.
+exact reproduction of either cited paper. An unverified-agent ablation remains future work.
+Jev can be enabled for matched comparisons as described in [System One integration](SYSTEM_ONE.md).
+Local Kev inference remains future work.
 
 Start each trial from the intended healthy baseline. To discard an accepted repair
 and reset the experiment topology, intentionally run:
@@ -352,7 +356,7 @@ sudo containerlab deploy -t labs/abilene.clab.yml
 An external partner verifier can replace the bundled adapter:
 
 ```bash
-sudo --preserve-env=OPENAI_API_KEY,LLM_MODEL \
+sudo --preserve-env=OPEN_ROUTER_KEY,LLM_MODEL \
   .venv/bin/python -m advnet.experiment run \
   --scenario scenarios/sea-host-interface-down.json --model "$LLM_MODEL" \
   --verifier-command '/absolute/path/to/python /absolute/path/to/partner_verifier.py'

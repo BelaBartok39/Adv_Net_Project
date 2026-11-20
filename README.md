@@ -3,7 +3,8 @@
 An 11-router Arista cEOS Abilene lab with 14 backbone links and 11 test hosts.
 The LLM-only loop observes, proposes, verifies with Batfish, deploys, and checks
 live results with rollback on failure. The Seattle interface repair has passed
-end to end in one attempt (93.31 seconds). Jev/Kev screening comes later.
+end to end in one attempt (93.31 seconds). Optional Jev screening is available
+through `--system-one jev`; the default is `--system-one off` (LLM-only).
 
 Run commands from the repository root on the Linux Docker host.
 
@@ -41,16 +42,16 @@ The check should report 110 pairs with healthy OSPF and full reachability.
 In the terminal used for experiments:
 
 ```bash
-read -rsp "OpenRouter API key: " OPENAI_API_KEY
+read -rsp "OpenRouter API key: " OPEN_ROUTER_KEY
 printf '\n'
-export OPENAI_API_KEY
+export OPEN_ROUTER_KEY
 export LLM_MODEL="nvidia/nemotron-3-ultra-550b-a55b:free"
 export LLM_BASE_URL="https://openrouter.ai/api/v1"
 export BATFISH_HOST="localhost"
 ```
 
-The compatible SDK reads your OpenRouter key from `OPENAI_API_KEY`. No Jev key is
-needed. `BATFISH_HOST` is a hostname only, without a scheme or port; Batfish uses
+Both the LLM and Jev use the same `OPEN_ROUTER_KEY`. `LLM_MODEL` selects the
+LLM; `SYSONE_MODEL` independently selects the System One model. `BATFISH_HOST` is a hostname only, without a scheme or port; Batfish uses
 port 9996. Variables last for this terminal session. `.env.example` lists them,
 but `.env` files are **not loaded automatically**. Keep API keys out of Git.
 
@@ -64,19 +65,72 @@ This disables Seattle's host-facing interface and asks the LLM to repair it.
 Deployment requires Batfish approval, followed by live acceptance checks.
 
 ```bash
-sudo --preserve-env=OPENAI_API_KEY,LLM_MODEL,LLM_BASE_URL,BATFISH_HOST \
+sudo --preserve-env=OPEN_ROUTER_KEY,LLM_MODEL,LLM_BASE_URL,BATFISH_HOST \
   .venv/bin/python -m advnet.experiment run \
   --scenario scenarios/sea-host-interface-down.json \
-  --provider compatible \
+  --provider openrouter \
   --base-url "$LLM_BASE_URL" \
   --model "$LLM_MODEL" \
+  --system-one off \
   --attempts 1
 ```
 
 Look for `success: true` and `cleanup_succeeded: true`. Results, observations,
 model/token usage, verifier reports, and timings are saved in `runs/<trial>/`.
-Use up to `--attempts 5` for iteration. Keep `--provider compatible` for OpenRouter;
-the default provider targets OpenAI.
+Use up to `--attempts 5` for iteration. OpenRouter is the default provider; `--provider compatible` remains an alias.
+
+## Enable Jev for comparison
+
+Install the optional SDK and select a System One model. Use the same OpenRouter key:
+
+```bash
+uv sync --extra openai --extra batfish --extra jev
+export SYSONE_MODEL="typesafe/jev-1.14"
+```
+
+Repeat the repair command with Jev enabled:
+
+```bash
+sudo --preserve-env=OPEN_ROUTER_KEY,LLM_MODEL,LLM_BASE_URL,BATFISH_HOST,SYSONE_MODEL \
+  .venv/bin/python -m advnet.experiment run \
+  --scenario scenarios/sea-host-interface-down.json \
+  --provider openrouter --base-url "$LLM_BASE_URL" --model "$LLM_MODEL" \
+  --system-one jev --sysone-model "$SYSONE_MODEL" --jev-threshold 0.9 --attempts 1
+```
+
+Switch back with `--system-one off`. Both modes receive the same public action
+catalog; remeasure the baseline for a matched comparison with this version.
+The first catalog covers host-interface recovery. Complex routing/congestion,
+uncertainty, errors, and rejected repairs go to the LLM. Jev candidates still
+require Batfish and live checks. The 0.9 threshold is an initial, uncalibrated
+setting. Pin a resolved Jev version and the LLM model for reported comparisons.
+
+Export comparison data, including separate Jev/LLM calls, tokens, and times:
+
+```bash
+mkdir -p captures
+.venv/bin/python scripts/summarize-trials.py runs > captures/comparison.csv
+```
+
+Missing usage or prices remain unknown. [System One details](docs/SYSTEM_ONE.md)
+describe the catalog, fallback rules, and limitations.
+
+## Fault benchmark
+
+The [30-case fault suite](docs/SCENARIO_SUITE.md) covers routine host failures,
+backbone shutdowns, OSPF mismatches, multiple/compound faults, router isolation,
+and congestion. It includes private routing labels, reference repairs, and
+separate controlled escalation probes.
+
+```bash
+.venv/bin/python scripts/scenario-suite.py list --profile smoke
+.venv/bin/python scripts/scenario-suite.py validate
+```
+
+Use `--reset-baseline` before each benchmark arm, the same scenario/models and
+budgets, and toggle `--system-one off|jev`. `--force-escalation` is an explicitly
+labelled overhead control that calls Jev before forcing LLM fallback; it is
+excluded from routing-accuracy scores. See the linked guide for paired commands.
 
 ## Visualizer and traffic
 

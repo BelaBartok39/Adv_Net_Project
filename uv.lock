@@ -25,6 +25,9 @@ dependencies = [
 batfish = [
     { name = "pybatfish" },
 ]
+jev = [
+    { name = "typesafe-sdk" },
+]
 live = [
     { name = "anthropic" },
     { name = "openai" },
@@ -41,9 +44,10 @@ requires-dist = [
     { name = "openai", marker = "extra == 'openai'", specifier = ">=2,<3" },
     { name = "pybatfish", marker = "extra == 'batfish'" },
     { name = "pydantic", specifier = ">=2.10,<3" },
+    { name = "typesafe-sdk", marker = "extra == 'jev'", specifier = ">=0.7.5,<0.8" },
     { name = "typesafe-sdk", marker = "extra == 'live'", specifier = ">=0.7.5,<0.8" },
 ]
-provides-extras = ["openai", "batfish", "live"]
+provides-extras = ["openai", "batfish", "jev", "live"]
 
 [[package]]
 name = "annotated-types"
