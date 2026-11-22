@@ -1,0 +1,48 @@
+{
+  "description": "Optional administrative LAX transit exclusion for the Seattle/New York ICMP host pair; other host pairs retain reachability-only requirements.",
+  "policy_requirement": "ICMP traffic between h-sea and h-nyc, in both directions, must avoid transit router lax; no exact route is required.",
+  "path_policies": [
+    {
+      "source": "h-sea",
+      "destination": "h-nyc",
+      "ip_protocol": "ICMP",
+      "required_transit_routers": [],
+      "forbidden_transit_routers": ["lax"]
+    },
+    {
+      "source": "h-nyc",
+      "destination": "h-sea",
+      "ip_protocol": "ICMP",
+      "required_transit_routers": [],
+      "forbidden_transit_routers": ["lax"]
+    }
+  ],
+  "candidate": {
+    "outcome": "candidate",
+    "diagnosis": "Predetermined test-only optimization candidate raises the cost of the den-kcy link, without considering the protected-pair transit exclusion.",
+    "evidence": ["The simulated experiment reduces den-kcy capacity; this fixed proposal tests the verification boundary, not an LLM decision."],
+    "changes": [
+      {
+        "device": "den",
+        "interface": "Ethernet3",
+        "action": "set_ospf_cost",
+        "value": 100
+      }
+    ],
+    "expected_effect": "Move Seattle-to-New-York routing away from den-kcy; Batfish must reject any resulting path through lax."
+  },
+  "scenario": {
+    "name": "abilene-protected-pair-den-kcy-congestion",
+    "objective": "optimization",
+    "objective_text": "Reduce transit-link utilization while preserving connectivity and the declared h-sea/h-nyc ICMP exclusion of lax in both directions.",
+    "flow": {
+      "source": "sea",
+      "destination": "nyc",
+      "seconds": 8,
+      "offered_mbps": 5
+    },
+    "capacities_mbps": {
+      "den-kcy": 2
+    }
+  }
+}
