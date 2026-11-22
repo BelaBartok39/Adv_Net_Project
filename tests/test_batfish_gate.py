@@ -11,7 +11,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from advnet.batfish_gate import check, host_addresses, main, model_config
-from scripts.build_diamond_snapshot import ROOT, build_snapshot, disable_interface
+from scripts.build_diamond_snapshot import ROOT, build_snapshot, disable_interface, set_ospf_cost
 
 
 class Frame:
@@ -52,6 +52,43 @@ def trace_row(source, destination, hosts, routers):
 
 
 class DiamondSnapshotTests(unittest.TestCase):
+    def test_via_r3_changes_only_two_costs_and_adds_policy_explicitly(self):
+        originals = {p: p.read_bytes() for p in (ROOT / 'labs/configs/diamond').glob('*.cfg')}
+        with tempfile.TemporaryDirectory() as tmp:
+            healthy = build_snapshot(Path(tmp) / 'healthy', path_policy=True)
+            alternate = build_snapshot(Path(tmp) / 'alternate', path_policy=True, via_r3=True)
+            for path in healthy.rglob('*'):
+                if not path.is_file():
+                    continue
+                relative = path.relative_to(healthy)
+                expected = path.read_bytes()
+                if str(relative) in ('configs/r1.cfg', 'configs/r4.cfg'):
+                    expected = expected.replace(b'   ip ospf cost 10\n', b'   ip ospf cost 1000\n')
+                self.assertEqual((alternate / relative).read_bytes(), expected)
+            self.assertEqual({p: p.read_bytes() for p in originals}, originals)
+            manifest = json.loads((healthy / 'intent.json').read_text())
+            self.assertEqual(manifest['path_policies'][0]['required_transit_routers'], ['r1', 'r2', 'r4'])
+            self.assertEqual(manifest['path_policies'][0]['forbidden_transit_routers'], ['r3'])
+            with self.assertRaises(FileExistsError):
+                build_snapshot(healthy, via_r3=True, path_policy=True)
+
+    def test_path_policy_and_via_r3_cli(self):
+        from scripts.build_diamond_snapshot import main as build_main
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / 'alternate'
+            with patch('sys.argv', ['build_diamond_snapshot.py', '--via-r3', '--path-policy',
+                                    '--output', str(directory)]), redirect_stdout(io.StringIO()):
+                build_main()
+            self.assertIn('   ip ospf cost 1000\n', (directory / 'configs/r1.cfg').read_text())
+            self.assertIn('path_policies', json.loads((directory / 'intent.json').read_text()))
+
+    def test_cost_change_rejects_missing_or_ambiguous_costs_and_interfaces(self):
+        valid = 'interface Ethernet1\n   ip ospf cost 10\n!\n'
+        for text in ('', valid + valid, valid.replace('   ip ospf cost 10\n', ''),
+                     valid.replace('   ip ospf cost 10\n', '   ip ospf cost 10\n   ip ospf cost 20\n')):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                set_ospf_cost(text, 'Ethernet1', 1000)
+
     def test_model_export_preserves_routing_and_only_excludes_exact_default_guards(self):
         guards = ('system l1\n   unsupported speed action error\n'
                   '   unsupported error-correction action error\n')
@@ -121,6 +158,7 @@ class DiamondSnapshotTests(unittest.TestCase):
                                  f'! device: {node} (cEOSLab, EOS-4.36.3M)\n'.encode() + original)
                 self.assertEqual((ROOT / f'labs/configs/diamond/{node}.cfg').read_bytes(), original)
             intent = json.loads((directory / 'intent.json').read_text())
+            self.assertNotIn('path_policies', intent)
             self.assertEqual(intent['lab'], 'advnet-diamond')
             self.assertEqual(set(intent['routers']), set(originals))
             self.assertEqual(set(intent['hosts']), {'host-a', 'host-b'})
@@ -186,6 +224,131 @@ class BatfishGateTests(unittest.TestCase):
         if text:
             self.assertIn(text, ' '.join(result['details']))
         return result
+
+    def write_policies(self, policies=None):
+        self.manifest['path_policies'] = policies if policies is not None else [{
+            'source': 'host-a', 'destination': 'host-b', 'ip_protocol': 'ICMP',
+            'required_transit_routers': ['r1', 'r2', 'r4'],
+            'forbidden_transit_routers': ['r3'],
+        }]
+        (self.directory / 'intent.json').write_text(json.dumps(self.manifest))
+
+    def test_valid_policy_checks_every_path_and_reuses_icmp_queries(self):
+        self.write_policies()
+        result = check(self.directory)
+        self.assertTrue(result['accepted'], result)
+        self.assertEqual(self.bf.q.traceroute.call_count, 2)
+        self.assertEqual(result['path_checks'][0]['path'], ['host-a', 'r1', 'r2', 'r4', 'host-b'])
+        self.assertTrue(result['path_checks'][0]['accepted'])
+
+    def test_one_violating_accepted_ecmp_path_rejects_with_full_diagnostics(self):
+        self.write_policies()
+        row = self.rows['host-b'][0]
+        row['Traces'].append(trace_row('host-a', 'host-b', self.hosts, ['r1', 'r3', 'r4'])['Traces'][0])
+        row['TraceCount'] = 2
+        result = self.reject('violates path_policies[0]')
+        details = ' '.join(result['details'])
+        for expected in ('host-a -> host-b', 'host-a -> r1 -> r3 -> r4 -> host-b',
+                         "missing required routers: ['r2']", "forbidden routers: ['r3']"):
+            self.assertIn(expected, details)
+        self.assertEqual([p['accepted'] for p in result['path_checks']], [True, False])
+        self.assertFalse(any('got ' in d or 'gate error' in d for d in result['details']))
+
+    def test_required_and_forbidden_routers_enforced_independently(self):
+        for required, forbidden, failed in [(['r3'], [], True), ([], ['r2'], True),
+                                             (['r2'], [], False), ([], ['r3'], False)]:
+            with self.subTest(required=required, forbidden=forbidden):
+                self.write_policies([{'source': 'host-a', 'destination': 'host-b', 'ip_protocol': 'ICMP',
+                                      'required_transit_routers': required,
+                                      'forbidden_transit_routers': forbidden}])
+                result = check(self.directory)
+                self.assertEqual(result['accepted'], not failed, result)
+
+    def test_failed_alternative_does_not_hide_accepted_path_policy_violation(self):
+        self.write_policies()
+        row = self.rows['host-b'][0]
+        row['Traces'] = trace_row('host-a', 'host-b', self.hosts, ['r1', 'r3', 'r4'])['Traces']
+        failed = deepcopy(row['Traces'][0])
+        failed.disposition = 'NO_ROUTE'
+        failed.hops = [SimpleNamespace(node='host-a'), SimpleNamespace(node='r1')]
+        row['Traces'].append(failed)
+        row['TraceCount'] = 2
+        result = self.reject('violates path_policies[0]')
+        self.assertIn('NO_ROUTE', ' '.join(result['details']))
+        self.assertIn('got 1', ' '.join(result['details']))
+
+    def test_direction_and_all_matching_policies_are_enforced(self):
+        self.write_policies()
+        policies = self.manifest['path_policies']
+        policies.append({**policies[0], 'required_transit_routers': ['r3'],
+                         'forbidden_transit_routers': []})
+        self.write_policies(policies)
+        result = self.reject('path_policies[1]')
+        self.assertEqual([p['accepted'] for p in result['path_checks']], [True, False])
+        self.assertEqual(len(result['details']), 1)
+
+    def test_empty_policies_preserve_legacy_queries_and_result(self):
+        baseline = check(self.directory)
+        self.bf.q.traceroute.reset_mock()
+        self.write_policies([])
+        self.assertEqual(check(self.directory), baseline)
+        self.assertEqual(self.bf.q.traceroute.call_count, 2)
+
+    def test_policy_flows_for_tcp_and_udp_are_queried_and_missing_flows_reject(self):
+        for protocol in ('TCP', 'UDP'):
+            with self.subTest(protocol=protocol):
+                self.write_policies()
+                self.write_policies([{**self.manifest['path_policies'][0], 'ip_protocol': protocol}])
+                def query(**kw):
+                    destination = next(h for h, ip in self.hosts.items() if ip == kw['headers'].dstIps)
+                    rows = deepcopy(self.rows[destination])
+                    for row in rows:
+                        row['Flow'].ipProtocol = kw['headers'].ipProtocols[0]
+                    return answer(Frame(rows, columns=['Flow', 'Traces', 'TraceCount']))
+                self.bf.q.traceroute.side_effect = query
+                result = check(self.directory)
+                self.assertTrue(result['accepted'], result)
+                self.assertIn('All 3 directed host flows', result['details'][0])
+                self.assertTrue(any(c.kwargs['headers'].ipProtocols == [protocol]
+                                    for c in self.bf.q.traceroute.call_args_list))
+                original = query
+                self.bf.q.traceroute.side_effect = lambda **kw: (
+                    answer(Frame([], columns=['Flow', 'Traces', 'TraceCount']))
+                    if kw['headers'].ipProtocols == [protocol] else original(**kw))
+                self.reject('got 2')
+
+    def test_policy_never_bypasses_connectivity_or_trace_completeness(self):
+        self.write_policies()
+        row = self.rows['host-b'][0]
+        for count in (2, None):
+            row['TraceCount'] = count
+            self.reject('missing or truncated traces')
+        row['TraceCount'] = 1
+        row['Traces'][0].hops = []
+        self.reject('hops')
+        self.rows = self.healthy_rows(self.hosts, ['r1', 'r2', 'r4'])
+        self.rows['host-a'][0]['Traces'][0].disposition = 'NO_ROUTE'
+        self.reject('NO_ROUTE')
+
+    def test_malformed_path_policies_reject_before_batfish_initialization(self):
+        self.write_policies()
+        valid = deepcopy(self.manifest['path_policies'][0])
+        invalid = [None, {}, 'policy', [None], [{}], [{**valid, 'typo': True}]]
+        invalid += [[{k: v for k, v in valid.items() if k != field}] for field in valid]
+        for field, values in {
+            'source': ['unknown', 'r1', [], None], 'destination': ['host-a', 'unknown', 1],
+            'ip_protocol': ['bogus', '', None, [], 'ICMP,TCP', 'icmp'],
+            'required_transit_routers': ['r2', None, ['host-a'], ['r2', 'r2'], [[]]],
+            'forbidden_transit_routers': [False, {}, ['unknown'], ['r2']],
+        }.items():
+            invalid.extend([[{**valid, field: value}] for value in values])
+        invalid.append([{**valid, 'required_transit_routers': [], 'forbidden_transit_routers': []}])
+        for policies in invalid:
+            with self.subTest(policies=policies):
+                self.manifest['path_policies'] = policies
+                (self.directory / 'intent.json').write_text(json.dumps(self.manifest))
+                self.reject('path_policies')
+        self.bf.init_snapshot.assert_not_called()
 
     def test_healthy_diamond_checks_exactly_two_cross_host_flows(self):
         result = check(self.directory)

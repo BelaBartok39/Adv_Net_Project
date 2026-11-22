@@ -1,4 +1,4 @@
-"""Conservative Batfish gate for the initial all-hosts-reachable routing policy.
+"""Conservative Batfish gate for all-host reachability and optional path policies.
 
 Run as: python -m advnet.batfish_gate /absolute/path/to/snapshot
 No approval is possible when initialization or any expected flow is missing.
@@ -59,6 +59,41 @@ def host_addresses(manifest):
     return hosts
 
 
+def path_policies(manifest, hosts):
+    """Require explicit, unambiguous policies; absence preserves legacy behavior.
+
+    Required routers are an unordered set of waypoints, not an exact route.
+    Protocols are named IPv4 ICMP, TCP or UDP; unsupported protocols reject.
+    """
+    policies = manifest.get('path_policies', [])
+    if not isinstance(policies, list):
+        raise ValueError('path_policies must be an array')
+    fields = {'source', 'destination', 'ip_protocol', 'required_transit_routers',
+              'forbidden_transit_routers'}
+    for index, policy in enumerate(policies):
+        label = f'path_policies[{index}]'
+        if not isinstance(policy, dict) or set(policy) != fields:
+            raise ValueError(f'{label} must specify exactly {sorted(fields)}')
+        for key in ('source', 'destination'):
+            if not isinstance(policy[key], str) or policy[key] not in hosts:
+                raise ValueError(f'{label}: unknown {key} host {policy[key]!r}')
+        if policy['source'] == policy['destination']:
+            raise ValueError(f'{label}: source and destination must differ')
+        if not isinstance(policy['ip_protocol'], str) or policy['ip_protocol'] not in {'ICMP', 'TCP', 'UDP'}:
+            raise ValueError(f'{label}: ip_protocol must be ICMP, TCP or UDP')
+        for key in ('required_transit_routers', 'forbidden_transit_routers'):
+            routers = policy[key]
+            if (not isinstance(routers, list)
+                    or any(not isinstance(node, str) or node not in manifest['routers'] for node in routers)
+                    or len(set(routers)) != len(routers)):
+                raise ValueError(f'{label}: {key} must list distinct known routers')
+        if set(policy['required_transit_routers']) & set(policy['forbidden_transit_routers']):
+            raise ValueError(f'{label}: required and forbidden routers overlap')
+        if not policy['required_transit_routers'] and not policy['forbidden_transit_routers']:
+            raise ValueError(f'{label}: at least one required or forbidden router is needed')
+    return policies
+
+
 def check(directory):
     try:
         # Preserve the submitted snapshot byte-for-byte. Only the temporary
@@ -87,6 +122,7 @@ def _check(directory):
     from pybatfish.datamodel.flow import HeaderConstraints
     manifest=json.loads((directory/'intent.json').read_text())
     hosts=host_addresses(manifest)
+    policies=path_policies(manifest,hosts)
     network=manifest['lab']
     if not isinstance(network,str) or not network.strip():
         raise ValueError('intent.json must specify a nonempty lab network name')
@@ -105,19 +141,23 @@ def _check(directory):
         return {'accepted':False,'details':['Snapshot did not model expected nodes: '+', '.join(sorted(missing))]}
     failures=[]
     checked=set()
-    for destination,ip in hosts.items():
-        expected_sources=set(hosts)-{destination}
+    path_checks=[]
+    queries={(destination,'ICMP'):set(hosts)-{destination} for destination in hosts}
+    for policy in policies:
+        queries.setdefault((policy['destination'],policy['ip_protocol']),set()).add(policy['source'])
+    for (destination,protocol),expected_sources in queries.items():
+        ip=hosts[destination]
         # Exact quoted node names, not an Abilene-specific prefix/regex. Exclude
         # the destination so self-flows cannot satisfy the cross-host policy.
         selector=','.join(json.dumps(name) for name in sorted(expected_sources))
-        frame=bf.q.traceroute(startLocation=selector,headers=HeaderConstraints(dstIps=ip,ipProtocols=['ICMP']),
+        frame=bf.q.traceroute(startLocation=selector,headers=HeaderConstraints(dstIps=ip,ipProtocols=[protocol]),
                              maxTraces=10000,ignoreFilters=False).answer().frame()
         sources=set()
         for row in frame.itertuples():
             flow=row.Flow
             source=flow.ingressNode
             if (source not in expected_sources or str(flow.srcIp)!=hosts[source]
-                    or str(flow.dstIp)!=ip or str(flow.ipProtocol).upper()!='ICMP'):
+                    or str(flow.dstIp)!=ip or str(flow.ipProtocol).upper()!=protocol):
                 failures.append('Unexpected flow or source address in traceroute result.')
                 continue
             if source in sources:
@@ -132,7 +172,11 @@ def _check(directory):
             dispositions={str(t.disposition).upper() for t in traces}
             if dispositions!={'ACCEPTED'}:
                 failures.append(f'{source} -> {destination}: '+', '.join(sorted(dispositions)))
-                continue
+                # Still diagnose violations on accepted alternatives when another
+                # alternative fails connectivity. Never count this flow as valid.
+                traces=[t for t in traces if str(t.disposition).upper()=='ACCEPTED']
+                if not traces:
+                    continue
             # ACCEPTED must mean delivery to the intended host through modeled
             # routers, rather than local acceptance by a router with a bad IP.
             if any(len(t.hops)<3 or t.hops[0].node!=source or t.hops[-1].node!=destination
@@ -140,14 +184,37 @@ def _check(directory):
                    for t in traces):
                 failures.append(f'{source} -> {destination}: unexpected or missing host/router hops.')
                 continue
-            checked.add((source,destination))
+            if dispositions=={'ACCEPTED'}:
+                checked.add((source,destination,protocol))
+            for index,policy in enumerate(policies):
+                if (policy['source'],policy['destination'],policy['ip_protocol'])!=(source,destination,protocol):
+                    continue
+                for trace in traces:
+                    path=[hop.node for hop in trace.hops]
+                    transit=set(path[1:-1])
+                    missing=sorted(set(policy['required_transit_routers'])-transit)
+                    forbidden=sorted(set(policy['forbidden_transit_routers']) & transit)
+                    path_checks.append({'policy_index':index,'policy':policy,'path':path,
+                                        'accepted':not missing and not forbidden,
+                                        'missing_required_routers':missing,'forbidden_routers':forbidden})
+                    if missing or forbidden:
+                        failures.append(f'{source} -> {destination} ({protocol}): path '
+                                        + ' -> '.join(path) + f' violates path_policies[{index}] '
+                                        + json.dumps(policy,sort_keys=True)
+                                        + f'; missing required routers: {missing}; forbidden routers: {forbidden}.')
         if sources!=expected_sources:
             failures.append(f'Missing expected source flows to {destination}.')
-    expected=len(hosts)*(len(hosts)-1)
+    expected=sum(len(sources) for sources in queries.values())
     if len(checked)!=expected:
         failures.append(f'Expected {expected} directed host checks; got {len(checked)}.')
-    return {'accepted':not failures,'details':failures or [f'All {expected} directed host flows are ACCEPTED on every modeled path.'],
+    result={'accepted':not failures,'details':failures or [f'All {expected} directed host flows are ACCEPTED on every modeled path.'],
             'scope':'ICMP all-host reachability; no security-zone policy has been defined yet.'}
+    if policies:
+        result['path_checks']=path_checks
+        result['scope']='ICMP all-host reachability and explicitly declared path policies on every modeled trace.'
+        if not failures:
+            result['details'].append(f'All {len(policies)} path policies passed on every modeled path.')
+    return result
 
 
 def main():

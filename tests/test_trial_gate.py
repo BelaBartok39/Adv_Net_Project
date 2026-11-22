@@ -141,6 +141,16 @@ class FixedDecision:
 
 
 class SnapshotCompatibilityTests(unittest.TestCase):
+    def test_trial_snapshot_preserves_explicit_path_policies(self):
+        lab = MemoryDiamondLab()
+        lab.manifest['path_policies'] = [{
+            'source': 'host-a', 'destination': 'host-b', 'ip_protocol': 'ICMP',
+            'required_transit_routers': ['r2'], 'forbidden_transit_routers': ['r3'],
+        }]
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = snapshot(Path(tmp), lab.configs(), lab.manifest)
+            self.assertEqual(json.loads((directory / 'intent.json').read_text()), lab.manifest)
+
     def test_trial_snapshot_models_diamond_separate_hosts(self):
         lab = MemoryDiamondLab()
         with tempfile.TemporaryDirectory() as tmp:
