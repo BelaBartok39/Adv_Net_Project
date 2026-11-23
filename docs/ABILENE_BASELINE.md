@@ -334,10 +334,208 @@ For congestion, maximum sampled directional link utilization must improve by at
 least 5% compared with the impaired network, with the throughput/loss/connectivity
 guardrails above. Interface tx-byte deltas surround the same fixed-load iperf3
 receiver measurement. Capacity values are meaningful only when shaping succeeds.
-Idle ping measurements are taken before traffic, so they must NOT be described as
-latency under congestion. Future experiments should add sustained-load latency
-sampling and longer/repeated measurement windows. Sidecar and counter sampling
-overhead should also be characterized before interpreting small differences.
+Traffic results also include receiver-side UDP interarrival `jitter_ms`, in
+milliseconds, from the same receiver summary used for throughput and loss.
+The existing selection order is server JSON `end.sum_received`, server JSON
+`end.sum`, then client JSON `end.sum_received` (including text-mode servers).
+The selected summary must identify `sender: false`; sender or interval estimates
+are not substituted for missing receiver jitter. A finite, nonnegative number
+has `jitter_status: "measured"`; absent or null jitter is `jitter_ms: null` with
+`jitter_status: "missing"`. Negative, nonfinite, boolean, or other nonnumeric
+values produce `jitter_ms: null` with `jitter_status: "invalid"`. A measured zero
+remains zero. Missing/invalid jitter preserves otherwise valid throughput, loss,
+and utilization measurements. Jitter is included in existing measurement files
+and decision observations, but does not change runtime acceptance thresholds.
+It measures packet-arrival variation, not RTT or one-way latency. See the
+[iperf3 receiver-summary implementation](https://github.com/esnet/iperf/blob/master/src/iperf_api.c).
+
+Offline coverage uses trimmed, synthetic iperf3-shaped JSON fixtures under
+`tests/fixtures/iperf3/`; these are not captured Abilene measurements or evidence
+of performance improvement. Reproduce receiver-summary selection, invalid/missing
+data handling, existing metric calculations, and observation/artifact propagation:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -p test_traffic_metrics.py -v
+```
+
+The existing `mean_rtt_ms` and per-pair ping matrix remain idle measurements,
+taken before traffic. They must not be described as latency under congestion.
+Traffic measurements additionally contain `loaded_rtt`, sampled for that flow's
+source/destination with one ICMP ping subprocess at a time while iperf runs.
+Probes bind to the data interface, use a one-packet/one-second ping deadline and
+at most a two-second subprocess timeout, and pause 200 ms between attempts.
+The sampler is stopped and joined on success or traffic failure. The iperf UDP
+command, single-flow scenario schema, jitter/throughput/loss calculations, and
+runtime acceptance thresholds are unchanged. Counter reads happen at iperf
+completion before waiting for a final probe to finish.
+
+Only probes wholly inside a conservatively verified sender-test interval count
+toward loaded RTT. Let `T` be the enclosing command's monotonic elapsed time and
+`D` the client sender summary's reported duration, in seconds. The sender test
+must start at an offset between `0` and `T-D`, so `[T-D, D]` is inside every
+possible sender interval. Both endpoints are further inset by 50 ms. This avoids
+assuming that process launch equals traffic start or that process exit equals
+traffic end. The sender summary must identify `sender: true`, positive bytes,
+zero start, and valid consistent duration/end times. Receiver duration is not
+substituted. The legacy client `end.sum` sender format is also supported.
+
+`traffic.loaded_rtt` records:
+
+- `mean_ms`, `min_ms`, and `max_ms`: RTT in milliseconds for eligible successful
+  probes only; `null` when no trustworthy measurement is available.
+- `status`: `measured`, `partial` (some eligible probes failed), or `unavailable`;
+  `reason` describes failures or inability to establish overlap.
+- `window`: the verified interval relative to iperf command launch, its sender
+  duration, and the method used; `null` if timing cannot be verified.
+- `samples_used` and `samples_failed`: successful and failed eligible probes.
+- `samples`: raw ping output/errors/return codes, RTT, monotonic start/end offsets
+  in seconds, and an `included` flag for every attempt. Setup/reporting probes
+  are retained for audit but excluded from the statistics.
+
+Missing/malformed sender timing, excessive setup/report overhead, or no complete
+eligible replies leaves loaded RTT unknown without discarding valid UDP metrics.
+In particular, short flows may yield no usable samples. RTT covers both forward
+and return paths; it is not one-way delay or application latency. A successful
+reply mean must be interpreted alongside probe failures and UDP loss. The probes
+also add a small amount of traffic. Live validation, longer/repeated windows,
+and characterization of probe/sidecar/counter overhead are still needed before
+claiming latency improvements.
+
+Run focused offline coverage with mocked traffic and ping subprocesses:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -p test_loaded_rtt.py -v
+```
+
+These tests establish timing/filtering and failure-handling behavior, not measured
+Abilene performance. Loaded RTT is preserved in the existing healthy, impaired,
+and candidate measurement files and observations; it is reporting only and is
+not used by `acceptable()`.
+
+Concurrent UDP collection is opt-in through `Lab.concurrent_traffic(flows,
+deadline)` or `Lab.measure(deadline, flows=flows)`. Existing positional `flow`
+calls and the 30 benchmark definitions are unchanged; `flow` and `flows` cannot
+be supplied together. [Traffic profiles and concurrent scenarios](TRAFFIC_PERFORMANCE.md)
+now expose the same collector through the experiment CLI. Single-flow acceptance
+is unchanged; batch trials apply those numeric guardrails to each matched flow.
+
+For example, on a machine already running Abilene and its iperf receivers:
+
+```python
+from advnet.lab import Deadline, Lab
+import json
+
+lab = Lab(json.load(open('topologies/abilene.json')))
+result = lab.concurrent_traffic([
+    {'source': 'sea', 'destination': 'sva', 'offered_mbps': 5, 'seconds': 12},
+    {'source': 'hou', 'destination': 'atl', 'offered_mbps': 3, 'seconds': 8},
+], Deadline(120))
+```
+
+Batches contain 2–4 flows. Endpoint names use the same router/attached-host
+inventory keys as single-flow scenarios. Each flow has its own source,
+destination, offered Mbps, duration (1–60 seconds), and optional integer
+`destination_port` (default 5201). Two flows cannot target the same receiver
+host/port: an [iperf3 server handles one active test](https://github.com/esnet/iperf/blob/master/src/iperf_server_api.c).
+An alternate port requires an already-running receiver on that port. Receivers
+are never created, replaced, or killed by this API; a busy/unavailable external
+receiver is a measurement failure, not zero throughput.
+
+Each client uses an owned temporary `advnet-host:0.1` sidecar sharing its source
+host's [network namespace](https://docs.docker.com/engine/network/#container-networks),
+bound to the source data IP. Clients are prepared before counter collection and
+released together, with at most four workers. Sidecars have a 128 MiB memory
+limit, 32-process limit, and no added capabilities. On completion, timeout,
+interruption, or failure, local client subprocesses are reaped and only sidecars
+with this batch's ownership label are removed. Cleanup errors are explicit;
+preexisting host containers and receiver daemons are left alone.
+
+The result retains per-flow receiver throughput, packet loss, jitter/status,
+timings, raw iperf JSON text, and stderr. One counter snapshot brackets each end
+of the whole batch; directional link utilization uses that common elapsed
+window. Aggregate throughput is total receiver bytes divided by that window,
+not a sum of per-flow rates measured over different durations. Aggregate loss
+uses summed lost-packet/packet counts, not an average of percentages. Missing
+byte/packet totals leave the corresponding aggregate metric `null` with an
+`unavailable` status. Capacity denominators remain reference values unless
+shaping was explicitly enabled.
+
+`concurrency_verified` and `overlap_window` describe the intersection of the
+conservative sender intervals used in Phase 2. Missing timing or no common
+interval leaves concurrency unverified; simultaneous launch alone is not
+claimed as proof of simultaneous sending. Batch collection currently measures
+UDP performance and shared utilization; loaded ICMP RTT remains available in
+the existing single-flow mode. No aggregate jitter or latency improvement is
+inferred across different paths. Offline tests use mocked subprocesses:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -p test_concurrent_traffic.py -v
+```
+
+Saved performance measurements can be compared offline without running another
+trial or changing runtime acceptance. The reporter reads the existing healthy,
+impaired, and per-attempt candidate artifacts:
+
+```bash
+.venv/bin/python scripts/compare-performance.py runs/EXISTING-TRIAL \
+  --output runs/EXISTING-TRIAL/performance-comparison-reviewed.json
+```
+
+For separately collected single-flow or concurrent measurement snapshots:
+
+```bash
+.venv/bin/python scripts/compare-performance.py \
+  --healthy /path/to/healthy-measurements.json \
+  --impaired /path/to/impaired-measurements.json \
+  --post /path/to/post-measurements.json \
+  --output runs/performance-comparison.json
+```
+
+Manual outputs must be new files. Trials also automatically save
+`performance-comparison.json`; `result.json.performance_report` records whether
+generation succeeded. A reporting failure does not change repair acceptance.
+Raw source files are unchanged and identified by absolute paths and SHA-256
+hashes. The JSON report retains raw stage snapshots
+as JSON text, plus normalized values and units: receiver throughput in Mbps,
+loss and utilization as fractions, and jitter/loaded RTT/idle RTT in ms. Raw
+JSON text also preserves malformed nonfinite inputs while normalized numeric
+fields remain valid finite JSON values or `null`. Per-link comparisons use the
+union of observed interfaces; a missing interface is unknown, not zero usage.
+Concurrent flows match by source, destination, and port rather than list index.
+No aggregate jitter or loaded RTT is inferred for concurrent flows.
+
+The three comparisons are impaired versus healthy, post versus impaired, and
+post versus healthy. Absolute change is **after minus before**, in the metric's
+unit. Relative change is `100 * (after - before) / before`; it is undefined for
+a zero baseline, even for zero-to-zero. Fraction metrics additionally report
+`100 * (after - before)` percentage points. For example, a synthetic loss change
+from 0.10 to 0.02 is -0.08 in fraction units, -8 percentage points, and -80%
+relative change. This example is arithmetic, not a measured experimental result.
+
+Missing, invalid, or explicitly unavailable measurements produce unknown deltas.
+Partial loaded-RTT means retain their quality flag and original probe evidence.
+Known changes in endpoints/ports, configured offered load/duration, or single
+versus batch measurement scope are marked `not_comparable`. Incomplete historical
+workload metadata and changed capacity denominators are warned about, rather
+than silently asserted to be matched experiments. Compare like workloads before
+interpreting a change as an optimization effect.
+
+Trial reports retain every attempt and its recorded acceptance. A final `post`
+stage is selected only when `result.json` records success for that exact accepted
+attempt with saved measurements. Rejected candidates remain separate, and a
+harness reset is never substituted for an optimization result. Incomplete or
+failed trials have unknown final-post values. Explicit stage-file mode reports
+the caller's supplied post snapshot without asserting deployment success.
+
+This is descriptive reporting: it runs no network probes or model calls,
+creates no new acceptance verdict, and does not alter `acceptable()` or its
+thresholds. Statistical significance, repeated-trial analysis, and claims of
+real performance improvement require separate experimental evidence. Reproduce
+the deterministic synthetic reporting tests with:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -p test_performance.py -v
+```
 
 Use `--attempts 1` for a single-shot verified baseline and `--attempts 5` for the
 iterative verified loop, holding all other settings constant. This is not an

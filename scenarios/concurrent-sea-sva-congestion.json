@@ -1,0 +1,10 @@
+{
+  "name": "concurrent-sea-sva-congestion",
+  "objective": "optimization",
+  "objective_text": "Reduce maximum shared transit-link utilization under unchanged concurrent UDP workloads; preserve receiver throughput, loss, connectivity, and expected OSPF adjacencies for every flow.",
+  "flows": [
+    {"source": "sea", "destination": "sva", "offered_mbps": 5, "seconds": 12},
+    {"source": "hou", "destination": "atl", "offered_mbps": 3, "seconds": 12}
+  ],
+  "capacities_mbps": {"sea-sva": 2}
+}

@@ -1,6 +1,7 @@
 """Abilene checks and controlled trials with optional Jev screening."""
 import argparse
 import fcntl
+import hashlib
 import importlib.util
 import json
 import math
@@ -13,16 +14,17 @@ from uuid import uuid4
 
 from .lab import Deadline, Lab
 from .catalog import experiment_catalog
-from .scenarios import load_scenario
+from .scenarios import load_scenario, load_traffic_profile
 from .trial import DecisionProcess, ProcessVerifier, Trial, dump
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=['check','collect','run'])
+    parser.add_argument('action',choices=['check','collect','traffic','run'])
     parser.add_argument('--manifest',type=Path,default=Path('topologies/abilene.json'))
     parser.add_argument('--output',type=Path)
     parser.add_argument('--scenario',type=Path)
+    parser.add_argument('--traffic-profile',type=Path,help='Single flow or concurrent flows JSON for traffic/collect; no model calls')
     parser.add_argument('--model',default=os.environ.get('LLM_MODEL'))
     parser.add_argument('--provider',choices=['openrouter','compatible'],default='openrouter')
     parser.add_argument('--base-url',default=os.environ.get('LLM_BASE_URL','https://openrouter.ai/api/v1'))
@@ -41,6 +43,10 @@ def main():
     parser.add_argument('--catalog',type=Path,help='Optional shared action catalog; default: host-interface recovery from topology inventory')
     parser.add_argument('--verifier-command',help='Executable plus arguments; snapshot directory is appended. No shell evaluation.')
     args=parser.parse_args()
+    if args.traffic_profile and args.action not in ('traffic','collect'):
+        parser.error('--traffic-profile is supported by traffic and collect; run uses its scenario')
+    if args.action=='traffic' and not args.traffic_profile:
+        parser.error('traffic requires --traffic-profile')
     if args.force_escalation and args.system_one!='jev':
         parser.error('--force-escalation requires --system-one jev')
     if args.action=='run' and (not args.model or not args.scenario):
@@ -60,6 +66,7 @@ def main():
     if not math.isfinite(args.jev_threshold) or not 0<=args.jev_threshold<=1 or not math.isfinite(args.jev_timeout) or args.jev_timeout<=0:
         parser.error('Jev threshold must be 0..1 and Jev timeout must be finite and positive')
     manifest=json.loads(args.manifest.read_text())
+    traffic_profile=load_traffic_profile(args.traffic_profile,manifest) if args.traffic_profile else None
     catalog=experiment_catalog(manifest,args.catalog) if args.action=='run' else {}
     scenario=load_scenario(args.scenario,manifest,catalog) if args.action=='run' else None
     baseline_configs=None
@@ -76,10 +83,37 @@ def main():
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:
             parser.error('Another Abilene experiment is running')
+        if args.action=='traffic':
+            directory=args.output or Path('runs')/('traffic-'+uuid4().hex)
+            directory.mkdir(parents=True,exist_ok=False)
+            dump(directory/'manifest.json',manifest)
+            dump(directory/'traffic-profile.json',traffic_profile)
+            evidence={'scope':'Traffic-only collection; no shaping, routing writes, Batfish, inference, or repair acceptance.',
+                      'started_at':datetime.now(timezone.utc).isoformat(),
+                      'input_sha256':{'manifest':hashlib.sha256(args.manifest.read_bytes()).hexdigest(),
+                                      'traffic_profile':hashlib.sha256(args.traffic_profile.read_bytes()).hexdigest()},
+                      'code_sha256':{name:hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
+                                     for name in ('experiment.py','lab.py','concurrent_traffic.py','scenarios.py')}}
+            try:
+                deadline=Deadline(args.seconds)
+                traffic=(lab.concurrent_traffic(traffic_profile['flows'],deadline) if 'flows' in traffic_profile
+                         else lab.traffic(traffic_profile['flow'],deadline))
+                dump(directory/'measurements.json',{'observed_at':datetime.now(timezone.utc).isoformat(),
+                     'scope':'traffic_only','mean_rtt_ms':None,'traffic':traffic})
+                evidence['status']='collected'
+            except BaseException as error:
+                evidence.update(status='failed',error_type=type(error).__name__,error=str(error)[:1500])
+                raise
+            finally:
+                evidence['finished_at']=datetime.now(timezone.utc).isoformat()
+                dump(directory/'evidence.json',evidence)
+            print(json.dumps({'output':str(directory),'status':'collected',
+                              'flow_count':len(traffic_profile.get('flows',[])) or 1},indent=2))
+            return 0
         if args.action in ('check','collect'):
             deadline=Deadline(args.seconds)
             lab.wait_convergence(deadline)
-            measurements=lab.measure(deadline)
+            measurements=lab.measure(deadline,**traffic_profile) if traffic_profile else lab.measure(deadline)
             path=args.output or Path('runs')/('abilene-'+args.action+'-'+uuid4().hex+'.json')
             path.parent.mkdir(parents=True,exist_ok=True)
             if args.action=='collect':
@@ -102,7 +136,8 @@ def main():
         result=trial.run(scenario)
         print(json.dumps({'output':str(directory),'mode':result['mode'],'success':result['success'],'attempts':result['attempts'],
                           'fault_to_acceptance_seconds':result['fault_to_acceptance_seconds'],
-                          'cleanup_succeeded':result['cleanup_succeeded'],'error':result.get('error')},indent=2))
+                          'cleanup_succeeded':result['cleanup_succeeded'],'error':result.get('error'),
+                          'performance_report':result.get('performance_report')},indent=2))
         return 0 if result['success'] else 1
 
 

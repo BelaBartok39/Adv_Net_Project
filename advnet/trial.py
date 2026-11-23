@@ -1,6 +1,7 @@
 """Bounded LLM-only observe/verify/deploy/measure/rollback experiments."""
 import hashlib
 import json
+import math
 import subprocess
 import sys
 import time
@@ -13,7 +14,7 @@ from .catalog import catalog_data, catalog_hash
 from .eos import candidate_configs
 from .lab import Deadline
 from .metrics import inference_metrics
-from .scenarios import routing_evaluation
+from .scenarios import routing_evaluation, ConcurrentFlow, MAX_CONCURRENT_FLOWS
 
 
 def dump(path, value):
@@ -127,6 +128,69 @@ def acceptable(current, healthy, impaired, objective):
     return {'accepted':not details,'details':details or ['All scoped runtime acceptance checks passed.']}
 
 
+def _batch_records(measurement):
+    """Validate new batch measurements before using existing numeric guardrails."""
+    if not isinstance(measurement,dict):
+        raise ValueError('Concurrent traffic measurement is missing')
+    traffic=measurement.get('traffic')
+    if not isinstance(traffic,dict) or traffic.get('mode')!='concurrent_udp':
+        raise ValueError('Concurrent traffic measurement is missing')
+    if any(type(measurement.get(key)) is not bool for key in ('all_reachable','ospf_healthy')):
+        raise ValueError('Concurrent reachability/OSPF measurements are missing')
+    def valid(value):
+        if type(value) not in (int,float):
+            return False
+        try:
+            return value>=0 and math.isfinite(value)
+        except OverflowError:
+            return False
+    window=traffic.get('overlap_window')
+    if (traffic.get('concurrency_verified') is not True or not isinstance(window,dict)
+            or not valid(window.get('start_seconds')) or not valid(window.get('end_seconds'))
+            or window['end_seconds']<=window['start_seconds']):
+        raise ValueError('Concurrent sender overlap was not verified')
+    if not valid(traffic.get('max_link_utilization')) or not valid(measurement.get('mean_rtt_ms')):
+        raise ValueError('Concurrent utilization or idle RTT is unavailable')
+    flows=traffic.get('flows')
+    if not isinstance(flows,list) or not 2<=len(flows)<=MAX_CONCURRENT_FLOWS:
+        raise ValueError('Concurrent flow records are incomplete')
+    records={}
+    for flow in flows:
+        profile=ConcurrentFlow.model_validate({key:flow[key] for key in
+            ('source','destination','destination_port','offered_mbps','seconds')})
+        key=(profile.source,profile.destination,profile.destination_port)
+        if key in records:
+            raise ValueError('Duplicate concurrent flow identity')
+        if (not valid(flow.get('received_mbps')) or not valid(flow.get('loss_fraction'))
+                or flow['loss_fraction']>1):
+            raise ValueError('Concurrent receiver throughput/loss is unavailable')
+        records[key]=flow
+    return records
+
+
+def acceptable_concurrent(current,healthy,impaired,objective):
+    """Apply unchanged single-flow thresholds to each matched batch flow."""
+    try:
+        records=[_batch_records(stage) for stage in (current,healthy,impaired)]
+    except (ValueError,KeyError,TypeError) as error:
+        return {'accepted':False,'details':['Concurrent runtime measurement rejected: '+str(error)]}
+    if any(set(record)!=set(records[1]) for record in records):
+        return {'accepted':False,'details':['Concurrent flow identities differ across trial stages.']}
+    failures=[]
+    for key in sorted(records[1]):
+        rows=[record[key] for record in records]
+        if any((row['offered_mbps'],row['seconds'])!=(rows[1]['offered_mbps'],rows[1]['seconds']) for row in rows):
+            failures.append(f'{key}: configured offered load/duration changed.')
+            continue
+        scoped=[{**stage,'traffic':{**row,'max_link_utilization':stage['traffic']['max_link_utilization']}}
+                for stage,row in zip((current,healthy,impaired),rows)]
+        check=acceptable(*scoped,objective)
+        if not check['accepted']:
+            failures.extend(f'{key}: {detail}' for detail in check['details'])
+    return {'accepted':not failures,'details':failures or [
+        'All flows passed the existing receiver-preservation and shared-utilization thresholds.']}
+
+
 class Trial:
     def __init__(self, lab, decision, verifier, directory, max_attempts=5, seconds=900, *, baseline_configs=None):
         if not 1<=max_attempts<=5:
@@ -160,6 +224,8 @@ class Trial:
             stream.write(json.dumps(event)+'\n')
 
     def run(self,scenario):
+        if scenario.get('flow') is not None and scenario.get('flows') is not None:
+            raise ValueError('Specify either flow or flows, not both')
         identifier='trial-'+uuid4().hex
         system_one_enabled=getattr(self.decision,'system_one_enabled',False)
         result={'trial_id':identifier,'mode':'jev_llm' if system_one_enabled else 'llm_only',
@@ -178,6 +244,9 @@ class Trial:
         capacities_changed=False
         feedback=[]
         seen=set()
+        def measure(limit):
+            return (self.lab.measure(limit,flows=scenario['flows']) if scenario.get('flows')
+                    else self.lab.measure(limit,scenario.get('flow')))
         try:
             if self.baseline_configs is not None:
                 dump(self.directory/'baseline-source-configs.json',self.baseline_configs)
@@ -187,14 +256,16 @@ class Trial:
                 result['baseline_reset_completed']=True
             healthy_configs=self.stage('checkpoint_healthy',lambda:self.lab.configs(setup))
             dump(self.directory/'healthy-configs.json',healthy_configs)
-            if scenario.get('flow'):
+            if scenario.get('flow') or scenario.get('flows'):
                 capacities_changed=True
                 self.stage('shape_healthy',lambda:self.lab.shape({},setup))
             self.stage('initial_convergence',lambda:self.lab.wait_convergence(setup))
-            healthy=self.stage('measure_healthy',lambda:self.lab.measure(setup,scenario.get('flow')))
+            healthy=self.stage('measure_healthy',lambda:measure(setup))
             dump(self.directory/'healthy-measurements.json',healthy)
             if not healthy['all_reachable'] or not healthy['ospf_healthy']:
                 raise ValueError('Healthy preflight failed; no fault injected')
+            if scenario.get('flows'):
+                self.stage('validate_healthy_traffic',lambda:_batch_records(healthy))
             gate_dir=snapshot(self.directory/'healthy-snapshot',healthy_configs,self.lab.manifest)
             gate=self.stage('verify_healthy',lambda:self.verifier.verify(gate_dir,setup))
             dump(self.directory/'healthy-verification.json',gate)
@@ -213,8 +284,10 @@ class Trial:
                 capacities_changed=True
                 self.stage('inject_capacity_change',lambda:self.lab.shape(scenario['capacities_mbps'],deadline))
             self.stage('fault_convergence',lambda:self.lab.wait_convergence(deadline))
-            impaired=self.stage('measure_impaired',lambda:self.lab.measure(deadline,scenario.get('flow')))
+            impaired=self.stage('measure_impaired',lambda:measure(deadline))
             dump(self.directory/'impaired-measurements.json',impaired)
+            if scenario.get('flows'):
+                self.stage('validate_impaired_traffic',lambda:_batch_records(impaired))
             if scenario['objective']=='repair' and impaired['all_reachable'] and impaired['ospf_healthy']:
                 raise ValueError('Scenario failed to produce the expected impairment')
             if scenario['objective']=='optimization' and (not impaired['traffic'] or impaired['traffic']['max_link_utilization']<=healthy['traffic']['max_link_utilization']*1.05):
@@ -237,19 +310,19 @@ class Trial:
                 decision_id=response.get('decision_id',identifier+f'-{attempt}')
                 if response.get('status')=='decision_error' or not response.get('proposal'):
                     feedback.append(Feedback(attempt=attempt,candidate_id=decision_id,stage='decision',accepted=False,details=['Decision did not return a valid candidate.']))
-                    last_measurement=self.lab.measure(deadline,scenario.get('flow'))
+                    last_measurement=measure(deadline)
                     continue
                 proposal=Proposal.model_validate(response['proposal'])
                 proposal.check_scope(observation)
                 if proposal.outcome!='candidate':
-                    last_measurement=self.lab.measure(deadline,scenario.get('flow'))
+                    last_measurement=measure(deadline)
                     feedback.append(Feedback(attempt=attempt,candidate_id=decision_id,stage='decision',accepted=False,details=['The injected impairment still requires repair; requested observations are refreshed.']))
                     continue
                 key=json.dumps(sorted([c.model_dump() for c in proposal.changes],key=lambda c:(c['device'],c['interface'],c['action'])),sort_keys=True)
                 fingerprint=hashlib.sha256(key.encode()).hexdigest()
                 if fingerprint in seen:
                     feedback.append(Feedback(attempt=attempt,candidate_id=decision_id,stage='decision',accepted=False,details=['This exact patch was already rejected; propose a different repair.']))
-                    last_measurement=self.lab.measure(deadline,scenario.get('flow'))
+                    last_measurement=measure(deadline)
                     continue
                 seen.add(fingerprint)
                 checkpoint=self.lab.configs(deadline)
@@ -261,16 +334,17 @@ class Trial:
                 dump(root/'verification.json',verification)
                 if not verification['accepted']:
                     feedback.append(Feedback(attempt=attempt,candidate_id=decision_id,stage='verification',accepted=False,details=verification['details']))
-                    last_measurement=self.lab.measure(deadline,scenario.get('flow'))
+                    last_measurement=measure(deadline)
                     continue
                 changed={c.device for c in proposal.changes}
                 if self.lab.configs(deadline)!=checkpoint:
                     raise RuntimeError('Network configuration changed during candidate verification')
                 self.stage('deploy',lambda:self.lab.replace({n:candidate[n] for n in changed},root/'deploy',deadline))
                 self.stage('post_deploy_convergence',lambda:self.lab.wait_convergence(deadline))
-                current=self.stage('measure_candidate',lambda:self.lab.measure(deadline,scenario.get('flow')))
+                current=self.stage('measure_candidate',lambda:measure(deadline))
                 dump(root/'measurements.json',current)
-                acceptance=acceptable(current,healthy,impaired,scenario['objective'])
+                acceptance=(acceptable_concurrent(current,healthy,impaired,scenario['objective']) if scenario.get('flows')
+                            else acceptable(current,healthy,impaired,scenario['objective']))
                 deadline.remaining()
                 dump(root/'acceptance.json',acceptance)
                 if acceptance['accepted']:
@@ -285,7 +359,7 @@ class Trial:
                 feedback.append(Feedback(attempt=attempt,candidate_id=decision_id,stage='runtime',accepted=False,
                                          details=acceptance['details'],measurements=current,rollback_succeeded=True))
                 self.lab.wait_convergence(deadline)
-                last_measurement=self.lab.measure(deadline,scenario.get('flow'))
+                last_measurement=measure(deadline)
         except BaseException as error:
             result['error_type']=type(error).__name__
             # Keep a useful failure reason; credentials are never passed as command arguments.
@@ -318,5 +392,22 @@ class Trial:
             result['cost_usd']=result['inference_metrics']['cost_usd'] if not result.get('error_type') else None
             if started is not None:
                 result['trial_elapsed_seconds']=time.monotonic()-started
+            try:
+                from .performance import compare_trial_artifacts
+                report=compare_trial_artifacts(self.directory,result=result)
+                report['code_sha256']={name:hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
+                                       for name in ('trial.py','lab.py','concurrent_traffic.py','scenarios.py','performance.py')}
+                sources=[self.directory/name for name in ('manifest.json','private-scenario.json',
+                         'healthy-measurements.json','impaired-measurements.json')]
+                sources.extend(path for path in self.directory.glob('attempt-*/*.json')
+                               if path.name in ('measurements.json','acceptance.json'))
+                report['source_files']={str(path.resolve()):hashlib.sha256(path.read_bytes()).hexdigest()
+                                        for path in sorted(sources) if path.is_file()}
+                dump(self.directory/'performance-comparison.json',report)
+                result['performance_report']={'status':'written','path':'performance-comparison.json'}
+            except Exception as error:
+                # A reporting failure must never change repair acceptance.
+                result['performance_report']={'status':'failed','error_type':type(error).__name__,
+                                               'error':str(error)[:1000]}
             dump(self.directory/'result.json',result)
         return result

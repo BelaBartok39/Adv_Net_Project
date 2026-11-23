@@ -1,7 +1,9 @@
 """Containerlab cEOS observation, measurement, and bounded configuration transport."""
 import json
+import math
 import re
 import subprocess
+from threading import Event
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -35,6 +37,74 @@ def command(args, timeout=30):
 def full_neighbors(text):
     return {line.split()[0] for line in (x.strip() for x in text.splitlines())
             if re.match(r'^\d+\.\d+\.\d+\.\d+\s', line) and re.search(r'\bFULL\b', line)}
+
+
+def udp_metrics(data):
+    """Extract the existing receiver statistics for either traffic mode."""
+    if data.get('error'):
+        raise RuntimeError('Traffic generator failed: '+str(data['error']))
+    server = data.get('server_output_json',{}).get('end',{})
+    received = server.get('sum_received') or server.get('sum') or data.get('end',{}).get('sum_received')
+    if not received or received.get('sender') is not False or 'lost_percent' not in received:
+        raise ValueError('Receiver-side UDP results are missing')
+    # Keep unknown jitter explicit and never substitute sender estimates.
+    jitter = received.get('jitter_ms')
+    jitter_status = 'missing' if jitter is None else 'measured'
+    if jitter is not None and (type(jitter) not in (int, float) or not 0 <= jitter < math.inf):
+        jitter, jitter_status = None, 'invalid'
+    return {'received_mbps':received['bits_per_second']/1e6,
+            'loss_fraction':received['lost_percent']/100,
+            'jitter_ms':jitter,'jitter_status':jitter_status}, received
+
+
+def loaded_rtt(data, samples, elapsed):
+    """Use only complete probes inside conservative iperf sender-time bounds.
+
+    If launch=L, completion=E and sender duration=D, its unknown start S obeys
+    L <= S <= E-D. Thus [E-D, L+D] lies inside every possible sender interval.
+    Shrink both ends by 50 ms to avoid timer/JSON rounding boundaries. A process
+    being alive alone is not evidence of traffic, nor is receiver/report time.
+    """
+    result = {'mean_ms': None, 'min_ms': None, 'max_ms': None,
+              'status': 'unavailable', 'reason': None, 'window': None,
+              'samples_used': 0, 'samples_failed': 0,
+              'samples': [{**sample, 'included': False} for sample in samples]}
+    end = data.get('end', {})
+    sender = end.get('sum_sent') or end.get('sum')
+    if not isinstance(sender, dict) or sender.get('sender') is not True:
+        result['reason'] = 'Sender timing is missing; overlap cannot be verified.'
+        return result
+    duration, start, finish, size = (sender.get(key) for key in ('seconds', 'start', 'end', 'bytes'))
+    if (any(type(value) not in (int, float) or not 0 <= value < math.inf
+            for value in (duration, start, finish, size))
+            or start != 0 or duration <= 0 or size <= 0
+            or abs(finish - duration) > 0.001 or duration > elapsed):
+        result['reason'] = 'Sender timing is invalid; overlap cannot be verified.'
+        return result
+    lower, upper = elapsed - duration + 0.05, duration - 0.05
+    if lower >= upper:
+        result['reason'] = 'Setup/report overhead leaves no verified probing interval.'
+        return result
+    result['window'] = {'start_seconds': lower, 'end_seconds': upper,
+                        'sender_duration_seconds': duration,
+                        'method': 'conservative_sender_duration_bounds'}
+    values = []
+    for sample in result['samples']:
+        if lower <= sample['start_seconds'] <= sample['end_seconds'] <= upper:
+            if sample['status'] == 'measured':
+                sample['included'] = True
+                values.append(sample['rtt_ms'])
+            else:
+                result['samples_failed'] += 1
+    if not values:
+        result['reason'] = 'No successful complete ping probes in the verified interval.'
+        return result
+    result.update(mean_ms=mean(values), min_ms=min(values), max_ms=max(values),
+                  samples_used=len(values),
+                  status='partial' if result['samples_failed'] else 'measured')
+    if result['samples_failed']:
+        result['reason'] = 'Some ping probes in the verified interval failed; see samples.'
+    return result
 
 
 class Lab:
@@ -127,28 +197,39 @@ class Lab:
         with ThreadPoolExecutor(max_workers=4) as pool:
             return dict(pool.map(one,self.routers))
 
-    def traffic(self, flow, deadline):
-        a,b = flow['source'],flow['destination']
-        seconds = flow.get('seconds',5)
-        if seconds < 1 or seconds > 60 or not 0 < flow['offered_mbps'] <= 1000:
-            raise ValueError('Invalid traffic profile')
-        # Counter samples surround the same constant-load measurement each time.
-        before = self.counters(deadline)
-        start = time.monotonic()
-        output = command(['docker','exec',self.prefix+self.routers[a]['host'],'iperf3','-c',self.routers[b]['host_ip'],
-                          '-B',self.routers[a]['host_ip'],'-u','-l','1200','-b',f'{flow["offered_mbps"]}M','-t',str(seconds),
-                          '-J','--get-server-output'],timeout=min(seconds+15,deadline.remaining()))
-        elapsed = time.monotonic()-start
-        after = self.counters(deadline)
-        data = json.loads(output)
-        if data.get('error'):
-            raise RuntimeError('Traffic generator failed: '+str(data['error']))
-        server = data.get('server_output_json',{}).get('end',{})
-        # A daemon started without -J returns server_output_text. iperf still
-        # includes the receiver's report in the client's end.sum_received.
-        received = server.get('sum_received') or server.get('sum') or data.get('end',{}).get('sum_received')
-        if not received or received.get('sender') is not False or 'lost_percent' not in received:
-            raise ValueError('Receiver-side UDP results are missing')
+    def _sample_loaded_rtt(self, source, destination, deadline, stop, start):
+        """One bounded ICMP probe at a time; keep raw results and local timing."""
+        samples = []
+        argv = ['docker', 'exec', self.prefix + self.routers[source]['host'],
+                'ping', '-n', '-I', 'eth1', '-c', '1', '-W', '1', '-w', '1',
+                self.routers[destination]['host_ip']]
+        while not stop.is_set():
+            sample = {'start_seconds': time.monotonic() - start, 'rtt_ms': None,
+                      'status': 'error', 'error': None, 'returncode': None,
+                      'stdout': '', 'stderr': ''}
+            try:
+                process = subprocess.run(argv, capture_output=True, text=True,
+                                         timeout=min(2, deadline.remaining()))
+                sample.update(stdout=process.stdout, stderr=process.stderr,
+                              returncode=process.returncode)
+                rtt = re.search(r'(?:rtt|round-trip) [^=]*=\s*([\d.]+)/([\d.]+)/([\d.]+)',
+                                process.stdout)
+                if process.returncode == 0 and rtt:
+                    value = float(rtt[2])
+                    if not 0 <= value < math.inf:
+                        raise ValueError('Ping returned an invalid RTT.')
+                    sample.update(rtt_ms=value, status='measured')
+                else:
+                    sample.update(status='failed', error='Ping failed or returned no valid RTT summary.')
+            except (OSError, subprocess.TimeoutExpired, TimeoutError, ValueError) as error:
+                sample['error'] = type(error).__name__ + ': ' + str(error)
+            sample['end_seconds'] = time.monotonic() - start
+            samples.append(sample)
+            if stop.wait(0.2):
+                break
+        return samples
+
+    def _link_utilization(self, before, after, elapsed):
         utilizations = {}
         for link in self.manifest['links']:
             for side in ('a','b'):
@@ -157,14 +238,47 @@ class Lab:
                 if delta<0:
                     raise ValueError('Interface counter reset during measurement')
                 utilizations[f'{n}:{interface}'] = delta*8 / elapsed / (self.capacities[link['id']]*1e6)
+        return utilizations
+
+    def concurrent_traffic(self, flows, deadline):
+        """Measure 2–4 UDP clients together; leaves existing single-flow behavior intact."""
+        from .concurrent_traffic import run_concurrent_traffic
+        return run_concurrent_traffic(self, flows, deadline)
+
+    def traffic(self, flow, deadline):
+        a,b = flow['source'],flow['destination']
+        seconds = flow.get('seconds',5)
+        if seconds < 1 or seconds > 60 or not 0 < flow['offered_mbps'] <= 1000:
+            raise ValueError('Invalid traffic profile')
+        # Counter samples surround the same constant-load measurement each time.
+        before = self.counters(deadline)
+        stop = Event()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            start = time.monotonic()
+            try:
+                probes = pool.submit(self._sample_loaded_rtt, a, b, deadline, stop, start)
+                output = command(['docker','exec',self.prefix+self.routers[a]['host'],'iperf3','-c',self.routers[b]['host_ip'],
+                                  '-B',self.routers[a]['host_ip'],'-u','-l','1200','-b',f'{flow["offered_mbps"]}M','-t',str(seconds),
+                                  '-J','--get-server-output'],timeout=min(seconds+15,deadline.remaining()))
+            finally:
+                elapsed = time.monotonic()-start
+                stop.set()
+            # Read counters before waiting for a final in-flight probe to exit.
+            after = self.counters(deadline)
+            samples = probes.result()
+        data = json.loads(output)
+        metrics, _ = udp_metrics(data)
+        utilizations = self._link_utilization(before, after, elapsed)
         return {'source':a,'destination':b,'offered_mbps':flow['offered_mbps'],
-                'udp_datagram_bytes':1200,
-                'duration_seconds':elapsed,'received_mbps':received['bits_per_second']/1e6,
-                'loss_fraction':received['lost_percent']/100,
+                'udp_datagram_bytes':1200,'seconds':seconds,'raw_iperf_json':output,
+                'duration_seconds':elapsed,**metrics,
+                'loaded_rtt':loaded_rtt(data, samples, elapsed),
                 'link_utilization':utilizations,'max_link_utilization':max(utilizations.values()),
                 'capacities_enforced':self.shaped,'link_capacities_mbps':dict(self.capacities)}
 
-    def measure(self, deadline, flow=None):
+    def measure(self, deadline, flow=None, *, flows=None):
+        if flow is not None and flows is not None:
+            raise ValueError('Specify either flow or flows, not both')
         neighbors = self.neighbors(deadline)
         expected = self.expected_neighbors()
         matrix = self.ping_matrix(deadline)
@@ -174,7 +288,8 @@ class Lab:
                 'mean_rtt_ms':mean(rtts) if rtts else None,
                 'ospf_healthy':all(full_neighbors(neighbors[n])==expected[n] for n in self.routers),
                 'ospf_neighbors':neighbors,
-                'traffic':self.traffic(flow,deadline) if flow else None}
+                'traffic':(self.concurrent_traffic(flows,deadline) if flows is not None
+                           else self.traffic(flow,deadline) if flow else None)}
 
     def observe(self, scenario_id, measurements, deadline, objective):
         configs = self.configs(deadline)

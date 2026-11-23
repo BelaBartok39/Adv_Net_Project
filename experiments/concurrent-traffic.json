@@ -1,0 +1,6 @@
+{
+  "flows": [
+    {"source": "sea", "destination": "sva", "offered_mbps": 5, "seconds": 12},
+    {"source": "hou", "destination": "atl", "offered_mbps": 3, "seconds": 12}
+  ]
+}

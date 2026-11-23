@@ -20,9 +20,12 @@ private harness data, saved for evaluation but never passed into either model.
 
 Congestion cases use 12-second receiver measurements, 1200-byte datagrams, and
 OSPF cost adjustments. They require throughput/loss preservation, an improvement
-in maximum sampled utilization, full connectivity, and healthy OSPF. They do not
-measure application latency under sustained congestion or historical Abilene
-propagation delays. All fault types fit the existing bounded repair language.
+in maximum sampled utilization, full connectivity, and healthy OSPF. Existing
+single-flow measurements also attempt loaded ICMP RTT sampling, separate from
+idle RTT; see [timing, failure handling, and limitations](ABILENE_BASELINE.md#4-additional-scenarios-and-comparisons).
+Loaded RTT may be unavailable when overlap cannot be verified and does not change
+benchmark acceptance. These are not application-latency or historical Abilene
+propagation-delay measurements. All fault types fit the existing bounded repair language.
 ACLs, BGP, process crashes, physical hardware faults, and healthy/no-fault controls
 are outside this first suite.
 
@@ -123,6 +126,12 @@ into natural escalation rates or claim they measure classifier correctness.
 Network/rate-limit failures can still prevent a request from completing.
 
 ## Reporting
+
+Trials now also write `performance-comparison.json` with descriptive healthy,
+impaired, and candidate metrics. Its status appears in `result.json`; reporting
+does not change acceptance. Existing CSV fields and all 30 benchmark definitions
+remain unchanged. [Concurrent traffic examples](TRAFFIC_PERFORMANCE.md) are
+separate experiments outside this frozen suite.
 
 Results and CSV include family, expected and actual first routes, classifier
 choice correctness, effective routing correctness, unnecessary escalation,
