@@ -471,6 +471,68 @@ inferred across different paths. Offline tests use mocked subprocesses:
 .venv/bin/python -m unittest discover -s tests -p test_concurrent_traffic.py -v
 ```
 
+Saved performance measurements can be compared offline without running another
+trial or changing runtime acceptance. The reporter reads the existing healthy,
+impaired, and per-attempt candidate artifacts:
+
+```bash
+.venv/bin/python scripts/compare-performance.py runs/EXISTING-TRIAL \
+  --output runs/EXISTING-TRIAL/performance-comparison.json
+```
+
+For separately collected single-flow or concurrent measurement snapshots:
+
+```bash
+.venv/bin/python scripts/compare-performance.py \
+  --healthy /path/to/healthy-measurements.json \
+  --impaired /path/to/impaired-measurements.json \
+  --post /path/to/post-measurements.json \
+  --output runs/performance-comparison.json
+```
+
+Outputs must be new files. Raw source files are unchanged and identified by
+absolute paths and SHA-256 hashes. The JSON report retains raw stage snapshots
+as JSON text, plus normalized values and units: receiver throughput in Mbps,
+loss and utilization as fractions, and jitter/loaded RTT/idle RTT in ms. Raw
+JSON text also preserves malformed nonfinite inputs while normalized numeric
+fields remain valid finite JSON values or `null`. Per-link comparisons use the
+union of observed interfaces; a missing interface is unknown, not zero usage.
+Concurrent flows match by source, destination, and port rather than list index.
+No aggregate jitter or loaded RTT is inferred for concurrent flows.
+
+The three comparisons are impaired versus healthy, post versus impaired, and
+post versus healthy. Absolute change is **after minus before**, in the metric's
+unit. Relative change is `100 * (after - before) / before`; it is undefined for
+a zero baseline, even for zero-to-zero. Fraction metrics additionally report
+`100 * (after - before)` percentage points. For example, a synthetic loss change
+from 0.10 to 0.02 is -0.08 in fraction units, -8 percentage points, and -80%
+relative change. This example is arithmetic, not a measured experimental result.
+
+Missing, invalid, or explicitly unavailable measurements produce unknown deltas.
+Partial loaded-RTT means retain their quality flag and original probe evidence.
+Known changes in endpoints/ports, configured offered load/duration, or single
+versus batch measurement scope are marked `not_comparable`. Incomplete historical
+workload metadata and changed capacity denominators are warned about, rather
+than silently asserted to be matched experiments. Compare like workloads before
+interpreting a change as an optimization effect.
+
+Trial reports retain every attempt and its recorded acceptance. A final `post`
+stage is selected only when `result.json` records success for that exact accepted
+attempt with saved measurements. Rejected candidates remain separate, and a
+harness reset is never substituted for an optimization result. Incomplete or
+failed trials have unknown final-post values. Explicit stage-file mode reports
+the caller's supplied post snapshot without asserting deployment success.
+
+This is descriptive reporting: it runs no network probes or model calls,
+creates no new acceptance verdict, and does not alter `acceptable()` or its
+thresholds. Statistical significance, repeated-trial analysis, and claims of
+real performance improvement require separate experimental evidence. Reproduce
+the deterministic synthetic reporting tests with:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -p test_performance.py -v
+```
+
 Use `--attempts 1` for a single-shot verified baseline and `--attempts 5` for the
 iterative verified loop, holding all other settings constant. This is not an
 exact reproduction of either cited paper. An unverified-agent ablation remains future work.
