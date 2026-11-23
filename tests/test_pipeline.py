@@ -133,6 +133,8 @@ class PipelineTests(unittest.TestCase):
         result = self.engine(MockJev("no_change"), llm).decide(self.observation, feedback, 2)
         self.assertEqual(result["screening"]["effective_route"], "escalate")
         self.assertFalse(llm.seen["feedback"][0]["accepted"])
+        self.assertEqual([c['stage'] for c in result['calls']],['llm'])
+        self.assertEqual(result['screening']['reason'],'prior_rejection')
 
     def test_failed_rollback_blocks_next_attempt(self):
         feedback = Feedback(attempt=1, candidate_id="test", stage="runtime", accepted=False,

@@ -8,6 +8,7 @@ dependencies = ["pydantic>=2.10,<3"]
 [project.optional-dependencies]
 openai = ["openai>=2,<3"]
 batfish = ["pybatfish"]
+jev = ["typesafe-sdk>=0.7.5,<0.8"]
 live = ["typesafe-sdk>=0.7.5,<0.8", "openai>=2,<3", "anthropic>=0.70,<1"]
 
 [tool.setuptools.packages.find]

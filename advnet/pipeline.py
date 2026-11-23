@@ -44,12 +44,15 @@ def valid_route(value, criteria):
 
 
 class DecisionEngine:
-    def __init__(self, screener, llm, catalog: dict[str, CatalogAction], threshold=0.9):
+    def __init__(self, screener, llm, catalog: dict[str, CatalogAction], threshold=0.9, force_escalation=False):
         if not math.isfinite(threshold) or not 0 <= threshold <= 1:
             raise ValueError("threshold must be between zero and one")
         if set(catalog) & {"no_change", "escalate"}:
             raise ValueError("Catalog contains reserved route names")
         self.screener, self.llm, self.catalog, self.threshold = screener, llm, catalog, threshold
+        if force_escalation and screener is None:
+            raise ValueError('Forced escalation requires an actual screening stage')
+        self.force_escalation=force_escalation
 
     def decide(self, observation: Observation, feedback: list[Feedback] | None = None, attempt=1):
         feedback = feedback or []
@@ -85,7 +88,7 @@ class DecisionEngine:
                 result["mock"] = True
 
         choice = "escalate"
-        if self.screener is not None:
+        if self.screener is not None and not feedback:
             criteria = {"no_change": "All requirements are satisfied; no intervention is needed.",
                         "escalate": "Further reasoning, missing evidence, uncertainty, or a novel problem requires the LLM.",
                         **{k: v.description for k, v in self.catalog.items()}}
@@ -97,8 +100,11 @@ class DecisionEngine:
                 result["screening"] = {"selected": selected, "selected_probability": probability,
                                        "raw": reply.value}
                 # Never let screening suppress measured failures after a rejected repair.
-                if probability >= self.threshold and not feedback:
+                if probability >= self.threshold:
                     choice = selected
+                if self.force_escalation:
+                    choice='escalate'
+                    result['screening']['forced_escalation']=True
                 result["screening"]["effective_route"] = choice
             except Exception as error:
                 # Errors escalate. Do not log exception text, which can contain credentials or payloads.
@@ -107,7 +113,8 @@ class DecisionEngine:
                     result["calls"].append({"stage": "jev", "error_type": type(error).__name__,
                                             "elapsed_ms": (perf_counter() - call_start) * 1000})
         else:
-            result["screening"] = {"effective_route": "escalate", "bypassed": True}
+            result["screening"] = {"effective_route": "escalate", "bypassed": True,
+                                   "reason": "prior_rejection" if feedback and self.screener is not None else "disabled"}
 
         if choice == "no_change":
             result["handoff"] = "independent_evaluation_required"
