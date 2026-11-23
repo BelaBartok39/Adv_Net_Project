@@ -1,0 +1,3 @@
+{
+  "flow": {"source": "sea", "destination": "sva", "offered_mbps": 5, "seconds": 12}
+}

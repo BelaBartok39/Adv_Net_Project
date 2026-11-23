@@ -134,6 +134,11 @@ excluded from routing-accuracy scores. See the linked guide for paired commands.
 
 ## Visualizer and traffic
 
+The [traffic and performance guide](docs/TRAFFIC_PERFORMANCE.md) covers
+measurement-only profiles, concurrent UDP trials, automatic stage comparisons,
+and optional Linux-only live validation. Existing benchmark scenarios and
+single-flow acceptance thresholds remain unchanged.
+
 In a separate terminal, start the dashboard and open **http://localhost:8765**:
 
 ```bash

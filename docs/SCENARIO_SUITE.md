@@ -127,6 +127,12 @@ Network/rate-limit failures can still prevent a request from completing.
 
 ## Reporting
 
+Trials now also write `performance-comparison.json` with descriptive healthy,
+impaired, and candidate metrics. Its status appears in `result.json`; reporting
+does not change acceptance. Existing CSV fields and all 30 benchmark definitions
+remain unchanged. [Concurrent traffic examples](TRAFFIC_PERFORMANCE.md) are
+separate experiments outside this frozen suite.
+
 Results and CSV include family, expected and actual first routes, classifier
 choice correctness, effective routing correctness, unnecessary escalation,
 incorrect catalog choices, false no-change claims, screening errors, model calls,

@@ -7,33 +7,15 @@ from threading import Event, Lock
 from time import monotonic
 from uuid import uuid4
 
-from pydantic import Field
-
 from .lab import loaded_rtt, udp_metrics
-from .scenarios import TrafficFlow
-
-
-MAX_CONCURRENT_FLOWS = 4
-
-
-class ConcurrentFlow(TrafficFlow):
-    destination_port: int = Field(default=5201, ge=1, le=65535)
+from .scenarios import ConcurrentFlow, MAX_CONCURRENT_FLOWS, validate_flow_endpoints
 
 
 def validate_flows(lab, flows):
     if not isinstance(flows, list) or not 2 <= len(flows) <= MAX_CONCURRENT_FLOWS:
         raise ValueError('Concurrent traffic requires an array of 2–4 flows')
-    normalized, destinations = [], set()
-    for flow in flows:
-        item = ConcurrentFlow.model_validate(flow).model_dump()
-        source, destination = item['source'], item['destination']
-        if source not in lab.routers or destination not in lab.routers or source == destination:
-            raise ValueError('Concurrent traffic requires distinct known source/destination hosts')
-        endpoint = (lab.routers[destination]['host'], item['destination_port'])
-        if endpoint in destinations:
-            raise ValueError('Concurrent flows cannot share a destination host/port; iperf3 servers serve one client at a time')
-        destinations.add(endpoint)
-        normalized.append(item)
+    normalized = [ConcurrentFlow.model_validate(flow).model_dump() for flow in flows]
+    validate_flow_endpoints(normalized,lab.routers)
     return normalized
 
 

@@ -415,8 +415,9 @@ not used by `acceptable()`.
 Concurrent UDP collection is opt-in through `Lab.concurrent_traffic(flows,
 deadline)` or `Lab.measure(deadline, flows=flows)`. Existing positional `flow`
 calls and the 30 benchmark definitions are unchanged; `flow` and `flows` cannot
-be supplied together. This phase adds the collector API only: the trial CLI and
-its acceptance decisions still use the existing single-flow scenarios.
+be supplied together. [Traffic profiles and concurrent scenarios](TRAFFIC_PERFORMANCE.md)
+now expose the same collector through the experiment CLI. Single-flow acceptance
+is unchanged; batch trials apply those numeric guardrails to each matched flow.
 
 For example, on a machine already running Abilene and its iperf receivers:
 
@@ -477,7 +478,7 @@ impaired, and per-attempt candidate artifacts:
 
 ```bash
 .venv/bin/python scripts/compare-performance.py runs/EXISTING-TRIAL \
-  --output runs/EXISTING-TRIAL/performance-comparison.json
+  --output runs/EXISTING-TRIAL/performance-comparison-reviewed.json
 ```
 
 For separately collected single-flow or concurrent measurement snapshots:
@@ -490,8 +491,11 @@ For separately collected single-flow or concurrent measurement snapshots:
   --output runs/performance-comparison.json
 ```
 
-Outputs must be new files. Raw source files are unchanged and identified by
-absolute paths and SHA-256 hashes. The JSON report retains raw stage snapshots
+Manual outputs must be new files. Trials also automatically save
+`performance-comparison.json`; `result.json.performance_report` records whether
+generation succeeded. A reporting failure does not change repair acceptance.
+Raw source files are unchanged and identified by absolute paths and SHA-256
+hashes. The JSON report retains raw stage snapshots
 as JSON text, plus normalized values and units: receiver throughput in Mbps,
 loss and utilization as fractions, and jitter/loaded RTT/idle RTT in ms. Raw
 JSON text also preserves malformed nonfinite inputs while normalized numeric

@@ -270,7 +270,7 @@ class Lab:
         metrics, _ = udp_metrics(data)
         utilizations = self._link_utilization(before, after, elapsed)
         return {'source':a,'destination':b,'offered_mbps':flow['offered_mbps'],
-                'udp_datagram_bytes':1200,
+                'udp_datagram_bytes':1200,'seconds':seconds,'raw_iperf_json':output,
                 'duration_seconds':elapsed,**metrics,
                 'loaded_rtt':loaded_rtt(data, samples, elapsed),
                 'link_utilization':utilizations,'max_link_utilization':max(utilizations.values()),

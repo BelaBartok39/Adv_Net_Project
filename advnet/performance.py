@@ -201,7 +201,7 @@ def compare_performance(healthy=None, impaired=None, post=None):
     return report
 
 
-def compare_trial_artifacts(directory):
+def compare_trial_artifacts(directory, *, result=None):
     """Keep all attempts; select a final post stage only from recorded success."""
     directory = Path(directory)
     if not directory.is_dir():
@@ -215,7 +215,8 @@ def compare_trial_artifacts(directory):
         return value
     healthy = read(directory / 'healthy-measurements.json')
     impaired = read(directory / 'impaired-measurements.json')
-    result = read(directory / 'result.json') or {}
+    if result is None:
+        result = read(directory / 'result.json') or {}
     attempts, selected, post = [], None, None
     paths = [path for path in directory.iterdir() if path.is_dir() and re.fullmatch(r'attempt-[1-9][0-9]*', path.name)]
     for path in sorted(paths, key=lambda p: int(p.name.split('-')[1])):
