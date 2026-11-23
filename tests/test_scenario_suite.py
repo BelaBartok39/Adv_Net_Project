@@ -39,7 +39,7 @@ class SimulatedLab:
         self.state.update(configs); self.writes.append(dict(configs))
     def shape(self,rates,*args):
         self.capacities={link['id']:rates.get(link['id'],100) for link in MANIFEST['links']}
-    def wait_convergence(self,*args): pass
+    def wait_convergence(self,*args,**kwargs): pass
     def measure(self,deadline=None,flow=None):
         model=predict(MANIFEST,self.state)
         failed=set(model['unreachable_pairs'])

@@ -42,7 +42,7 @@ class FakeLab:
         self.state.update(configs)
         self.replacements.append(dict(configs))
 
-    def wait_convergence(self,*args):
+    def wait_convergence(self,*args,**kwargs):
         pass
 
     def measure(self,*args):

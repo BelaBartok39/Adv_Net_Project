@@ -31,7 +31,7 @@ class MemoryAbileneLab:
     def configs(self, deadline=None):
         return dict(self.state)
 
-    def wait_convergence(self, deadline):
+    def wait_convergence(self, deadline, *args, **kwargs):
         deadline.remaining()
 
     def shape(self, capacities, deadline):

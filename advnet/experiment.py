@@ -112,7 +112,8 @@ def main():
             return 0
         if args.action in ('check','collect'):
             deadline=Deadline(args.seconds)
-            lab.wait_convergence(deadline)
+            lab.wait_convergence(deadline,120 if args.action=='check' else 60,
+                                 require_healthy=args.action=='check')
             measurements=lab.measure(deadline,**traffic_profile) if traffic_profile else lab.measure(deadline)
             path=args.output or Path('runs')/('abilene-'+args.action+'-'+uuid4().hex+'.json')
             path.parent.mkdir(parents=True,exist_ok=True)

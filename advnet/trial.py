@@ -259,7 +259,7 @@ class Trial:
             if scenario.get('flow') or scenario.get('flows'):
                 capacities_changed=True
                 self.stage('shape_healthy',lambda:self.lab.shape({},setup))
-            self.stage('initial_convergence',lambda:self.lab.wait_convergence(setup))
+            self.stage('initial_convergence',lambda:self.lab.wait_convergence(setup,120,require_healthy=True))
             healthy=self.stage('measure_healthy',lambda:measure(setup))
             dump(self.directory/'healthy-measurements.json',healthy)
             if not healthy['all_reachable'] or not healthy['ospf_healthy']:
@@ -340,7 +340,9 @@ class Trial:
                 if self.lab.configs(deadline)!=checkpoint:
                     raise RuntimeError('Network configuration changed during candidate verification')
                 self.stage('deploy',lambda:self.lab.replace({n:candidate[n] for n in changed},root/'deploy',deadline))
-                self.stage('post_deploy_convergence',lambda:self.lab.wait_convergence(deadline))
+                converged=self.stage('post_deploy_convergence',lambda:self.lab.wait_convergence(deadline,120,require_healthy=True))
+                dump(root/'convergence.json',{'require_healthy':True,'max_wait_seconds':120,
+                                              'healthy_before_measurement':converged})
                 current=self.stage('measure_candidate',lambda:measure(deadline))
                 dump(root/'measurements.json',current)
                 acceptance=(acceptable_concurrent(current,healthy,impaired,scenario['objective']) if scenario.get('flows')
@@ -376,7 +378,9 @@ class Trial:
                     self.stage('restore_capacities',lambda:self.lab.shape({},Deadline(180)))
                 if healthy_configs and not result['success'] and started is not None:
                     recovery_deadline=Deadline(180)
-                    self.stage('reset_convergence',lambda:self.lab.wait_convergence(recovery_deadline))
+                    converged=self.stage('reset_convergence',lambda:self.lab.wait_convergence(recovery_deadline,120,require_healthy=True))
+                    dump(self.directory/'reset-convergence.json',{'require_healthy':True,'max_wait_seconds':120,
+                                                                 'healthy_before_measurement':converged})
                     recovery=self.stage('verify_reset_runtime',lambda:self.lab.measure(recovery_deadline))
                     dump(self.directory/'reset-measurements.json',recovery)
                     if not recovery['all_reachable'] or not recovery['ospf_healthy']:

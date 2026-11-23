@@ -154,9 +154,17 @@ class Lab:
             expected[l['b']].add(self.routers[l['a']]['router_id'])
         return expected
 
-    def wait_convergence(self, deadline, seconds=60):
+    def wait_convergence(self, deadline, seconds=60, *, require_healthy=False):
+        """Wait for stable routes, optionally also for every expected OSPF peer.
+
+        Broken-state observation intentionally permits missing adjacencies. After
+        a repair/reset, stable alternate routes alone do not establish recovery.
+        If routes stabilize but OSPF remains unhealthy for the local window,
+        return False so normal runtime measurement can reject and roll back the
+        candidate. Expiring the overall deadline still raises TimeoutError.
+        """
         end = min(time.monotonic()+seconds, deadline.end)
-        previous, stable = None, 0
+        previous, stable, healthy_samples = None, 0, 0
         while time.monotonic() < end:
             # Stable RIBs allow failures to be diagnosed too; "stable" is not "healthy".
             with ThreadPoolExecutor(max_workers=4) as pool:
@@ -165,9 +173,22 @@ class Lab:
             normalized = {n:re.sub(r'\b\d{1,2}:\d{2}:\d{2}\b', '<age>', text) for n,text in current.items()}
             stable = stable+1 if normalized == previous else 0
             if stable >= 2:
-                return
+                if not require_healthy:
+                    return True
+                neighbors = self.neighbors(deadline)
+                expected = self.expected_neighbors()
+                healthy = set(neighbors) == set(expected) and all(
+                    full_neighbors(neighbors[node]) == expected[node] for node in expected)
+                healthy_samples = healthy_samples+1 if healthy else 0
+                if healthy_samples >= 2:
+                    return True
+            else:
+                healthy_samples = 0
             previous = normalized
             time.sleep(min(2, deadline.remaining()))
+        deadline.remaining()
+        if require_healthy and stable >= 2:
+            return False
         raise TimeoutError('Routing did not stabilize inside the convergence window')
 
     def ping_matrix(self, deadline):

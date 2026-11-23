@@ -75,7 +75,7 @@ class MemoryDiamondLab:
             raise ValueError(f'Missing fixture interface {node}/{interface}')
         return not any(line.strip() == 'shutdown' for line in block[0].splitlines())
 
-    def wait_convergence(self, deadline):
+    def wait_convergence(self, deadline, *args, **kwargs):
         deadline.remaining()  # No sleep or live polling: measurements are synthetic.
 
     def measure(self, deadline=None, flow=None):
