@@ -6,6 +6,7 @@ import math
 import mimetypes
 import re
 import threading
+import urllib.request
 import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -123,7 +124,7 @@ class Demo:
 
 
 class App:
-    def __init__(self,manifest,root,configs,mode='live',interval=2,status_interval=10,config_interval=30,record=True):
+    def __init__(self,manifest,root,configs,mode='live',interval=2,status_interval=10,config_interval=30,record=True,observer_port=None):
         self.manifest,self.mode,self.interval=manifest,mode,interval
         self.artifacts=Artifacts(root)
         self.configs=configs
@@ -138,6 +139,10 @@ class App:
         self.last_path=None
         self.observer_events=[]
         self.probe_status=None
+        self.observer_port=observer_port
+        self.relay_lock=threading.Lock()
+        self.relay_updated=0
+        self.relay_state={}
         if mode=='live' and record:
             folder=Path(root)/'visualizer'
             folder.mkdir(parents=True,exist_ok=True)
@@ -181,13 +186,51 @@ class App:
         else:
             with self.lock:
                 frame=copy.deepcopy(self.latest)
+        relay={}
+        if self.mode=='relay':
+            with self.relay_lock:
+                if time.monotonic()-self.relay_updated>=1.5:
+                    try:
+                        with urllib.request.urlopen(f'http://127.0.0.1:{self.observer_port}/api/state',timeout=2) as response:
+                            payload=response.read(12*1024*1024+1)
+                        if len(payload)>12*1024*1024:
+                            raise ValueError('Observer response too large')
+                        value=json.loads(payload)
+                        if not isinstance(value,dict) or not isinstance(value.get('frame'),dict):
+                            raise ValueError('Missing observer frame')
+                        self.relay_state=value
+                    except (OSError,ValueError):
+                        self.relay_state=copy.deepcopy(self.relay_state)
+                        stale=self.relay_state.setdefault('frame',copy.deepcopy(self.latest))
+                        stale['errors']=['Existing observer unavailable; displayed telemetry may be stale.']
+                    self.relay_updated=time.monotonic()
+                relay=copy.deepcopy(self.relay_state)
+                frame=relay.get('frame',frame)
         if experiment is None:
             latest=next((r for r in runs if r['kind']=='experiment'),None)
             if latest:
                 experiment=self.artifacts.experiment(latest['id'])
+        campaign=None
+        if experiment:
+            parts=experiment['id'].split('/')
+            if len(parts)==3:
+                campaign=self.artifacts.campaign(parts[0])
+            if experiment.get('frames'):
+                checkpoint=experiment['frames'][-1]
+                check=checkpoint['measurement']
+                if self.mode=='files':
+                    from .visualizer_data import read_json
+                    root=self.artifacts.run(experiment['id'])
+                    configs=read_json(self.artifacts.safe(root/('impaired-configs.json' if checkpoint['label']=='Injected impairment' else 'healthy-configs.json')))
+                    if checkpoint.get('attempt'):
+                        attempt=next((a for a in experiment['attempts'] if a['id']==checkpoint['attempt']),None)
+                        configs=attempt['candidate_configs'] if attempt else None
+                    frame=recorded_frame(self.manifest,check,configs,checkpoint['label'])
         return {'mode':self.mode,'frame':frame,'runs':runs,'last_check':check,'experiment':experiment,
-                'path':self.last_path,'recording':self.record_path.name if self.record_path else None,
-                'observer_events':copy.deepcopy(self.observer_events),'probe_status':copy.deepcopy(self.probe_status),
+                'campaign':campaign,'observer_port':self.observer_port,
+                'path':relay.get('path') if self.mode=='relay' else self.last_path,
+                'recording':relay.get('recording') if self.mode=='relay' else self.record_path.name if self.record_path else None,
+                'observer_events':copy.deepcopy(relay.get('observer_events',[]) if self.mode=='relay' else self.observer_events),'probe_status':copy.deepcopy(self.probe_status),
                 'served_at':now()}
 
     def probe_event(self,identifier,source,destination,status,started,message):
@@ -204,7 +247,7 @@ class App:
             pass
 
     def probe(self,source,destination):
-        if self.mode=='files':
+        if self.mode in ('files','relay'):
             raise ValueError('Path probing is disabled in files-only mode')
         if source not in self.manifest['routers'] or destination not in self.manifest['routers'] or source==destination:
             raise ValueError('Choose two different sites from the inventory')
@@ -337,14 +380,17 @@ def main():
     group=parser.add_mutually_exclusive_group()
     group.add_argument('--demo',action='store_true')
     group.add_argument('--files-only',action='store_true')
+    group.add_argument('--observer-port',type=int,help='Reuse an existing localhost observer without extra Docker polling')
     parser.add_argument('--no-record',action='store_true')
     args=parser.parse_args()
     if any(not math.isfinite(v) or v<1 for v in (args.interval,args.status_interval,args.config_interval)) or not 1<=args.port<=65535:
         parser.error('Intervals must be at least 1 second, and the port must be valid')
+    if args.observer_port is not None and (not 1<=args.observer_port<=65535 or args.observer_port==args.port):
+        parser.error('The existing observer must use a different valid local port')
     manifest=json.loads(args.manifest.read_text())
     configs={n:(args.manifest.resolve().parent.parent/'labs/configs/abilene'/f'{n}.cfg').read_text() for n in manifest['routers']}
-    mode='demo' if args.demo else 'files' if args.files_only else 'live'
-    app=App(manifest,args.runs,configs,mode,args.interval,args.status_interval,args.config_interval,not args.no_record)
+    mode='demo' if args.demo else 'files' if args.files_only else 'relay' if args.observer_port else 'live'
+    app=App(manifest,args.runs,configs,mode,args.interval,args.status_interval,args.config_interval,not args.no_record,observer_port=args.observer_port)
     try:
         server=ThreadingHTTPServer(('127.0.0.1',args.port),Handler)
     except OSError as error:

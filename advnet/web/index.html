@@ -22,6 +22,21 @@
     <article><span class="metric-label">Last connectivity check</span><div><strong id="pair-count">—</strong><span class="metric-unit"> / 110</span></div><p id="pair-note">No measurements loaded</p></article>
     <article><span class="metric-label">Peak observed traffic</span><div><strong id="peak-rate">—</strong><span id="peak-unit" class="metric-unit"> Mbps</span></div><p id="peak-note">Directional interface counters</p></article>
   </section>
+  <section id="decision-monitor" class="panel decision-monitor" aria-label="Live experiment decisions">
+    <div class="panel-heading"><div><span class="eyebrow">LIVE EXPERIMENT</span><h2 id="active-trial">Waiting for a trial</h2></div><span id="decision-mode" class="pill muted">NO TRIAL</span></div>
+    <div class="active-stage"><div><span id="active-phase">Waiting for a journal</span><span id="phase-elapsed" class="small"></span></div><span id="active-calls" class="small">No recorded model calls</span></div>
+    <div class="decision-grid">
+      <article><span class="eyebrow">JEV ROUTING</span><h3 id="jev-route">Not recorded</h3><p id="jev-detail" class="small"></p><div id="jev-calls"></div></article>
+      <article><span class="eyebrow">LLM EXECUTION</span><h3 id="llm-route">Not recorded</h3><p id="llm-detail" class="small"></p><div id="llm-calls"></div></article>
+      <article><span class="eyebrow">PROPOSAL / OUTCOME</span><h3 id="candidate-state">Awaiting proposal</h3><p id="candidate-detail" class="small"></p><button id="inspect-decision" class="button quiet">Inspect decision and diff ↗</button></article>
+    </div>
+    <p id="decision-freshness" class="small decision-freshness">Journals refresh every two seconds. Model results appear when the decision call finishes.</p>
+  </section>
+  <section id="campaign-panel" class="panel campaign-panel hidden" aria-label="Campaign progress">
+    <div class="campaign-heading"><div><span class="eyebrow">MATCHED EXPERIMENT CAMPAIGN</span><h2 id="campaign-name"></h2></div><strong id="campaign-count"></strong><span id="campaign-outcomes" class="small"></span></div>
+    <progress id="campaign-progress" value="0" max="1" aria-label="Completed trials"></progress>
+    <details><summary>Trial results and upcoming runs</summary><div class="campaign-table"><table><thead><tr><th>Trial</th><th>Scenario</th><th>Mode</th><th>Status</th><th>Acceptance</th></tr></thead><tbody id="campaign-jobs"></tbody></table></div></details>
+  </section>
   <div class="workspace">
     <section class="map-panel panel" aria-labelledby="map-title">
       <div class="panel-heading"><div><span class="eyebrow">INTERNET TOPOLOGY ZOO · 2005_02</span><h2 id="map-title">Abilene backbone</h2></div><div class="map-tools"><label><input type="checkbox" id="animate" checked> Rate animation</label><button id="zoom-out" class="icon-button" aria-label="Zoom out">−</button><button id="zoom-in" class="icon-button" aria-label="Zoom in">+</button><button id="fit" class="icon-button" aria-label="Fit topology">↗</button></div></div>
@@ -33,10 +48,10 @@
     </section>
     <aside class="inspector panel" aria-labelledby="inspector-title">
       <div class="panel-heading"><div><span class="eyebrow">INSPECTOR</span><h2 id="inspector-title">Seattle</h2></div><span id="node-state" class="pill muted">UNKNOWN</span></div>
-      <div class="tabs" role="tablist" aria-label="Inspector"><button class="tab active" role="tab" aria-selected="true" data-tab="device">Device</button><button class="tab" role="tab" aria-selected="false" data-tab="config">Configuration</button><button class="tab" role="tab" aria-selected="false" data-tab="changes">LLM changes</button></div>
+      <div class="tabs" role="tablist" aria-label="Inspector"><button class="tab active" role="tab" aria-selected="true" data-tab="device">Device</button><button class="tab" role="tab" aria-selected="false" data-tab="config">Configuration</button><button class="tab" role="tab" aria-selected="false" data-tab="changes">Decisions & changes</button></div>
       <div id="device-panel" class="tab-panel"></div>
       <div id="config-panel" class="tab-panel hidden"><p id="config-provenance" class="small"></p><pre id="config-content" class="code-block"></pre></div>
-      <div id="changes-panel" class="tab-panel hidden"><label class="small" for="attempt-select">Decision attempt</label><select id="attempt-select"></select><div id="change-content"></div></div>
+      <div id="changes-panel" class="tab-panel hidden"><label class="small" for="attempt-select">Decision attempt</label><select id="attempt-select"></select><label class="small follow-attempt"><input id="follow-attempt" type="checkbox" checked> Follow latest attempt</label><div id="change-content"></div></div>
     </aside>
   </div>
   <section class="timeline-panel panel" aria-labelledby="timeline-title">
