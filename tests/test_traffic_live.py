@@ -86,7 +86,7 @@ class LiveTrafficTests(unittest.TestCase):
                 self.assertIn('end',json.loads(flow['raw_iperf_json']))
                 absent=docker('inspect',flow['client_container'],check=False)
                 self.assertNotEqual(absent.returncode,0)
-                self.assertIn('No such',absent.stderr)
+                self.assertIn('no such',absent.stderr)
             evidence.update(verification_passed=True,results=results,
                             limitation='One unshaped Linux bridge run; not Abilene, congestion repair, or optimization evidence. The 100 Mbps utilization denominator is an unenforced reference.')
         except BaseException as error:
