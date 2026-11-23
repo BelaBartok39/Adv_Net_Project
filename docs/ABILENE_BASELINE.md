@@ -412,6 +412,65 @@ Abilene performance. Loaded RTT is preserved in the existing healthy, impaired,
 and candidate measurement files and observations; it is reporting only and is
 not used by `acceptable()`.
 
+Concurrent UDP collection is opt-in through `Lab.concurrent_traffic(flows,
+deadline)` or `Lab.measure(deadline, flows=flows)`. Existing positional `flow`
+calls and the 30 benchmark definitions are unchanged; `flow` and `flows` cannot
+be supplied together. This phase adds the collector API only: the trial CLI and
+its acceptance decisions still use the existing single-flow scenarios.
+
+For example, on a machine already running Abilene and its iperf receivers:
+
+```python
+from advnet.lab import Deadline, Lab
+import json
+
+lab = Lab(json.load(open('topologies/abilene.json')))
+result = lab.concurrent_traffic([
+    {'source': 'sea', 'destination': 'sva', 'offered_mbps': 5, 'seconds': 12},
+    {'source': 'hou', 'destination': 'atl', 'offered_mbps': 3, 'seconds': 8},
+], Deadline(120))
+```
+
+Batches contain 2–4 flows. Endpoint names use the same router/attached-host
+inventory keys as single-flow scenarios. Each flow has its own source,
+destination, offered Mbps, duration (1–60 seconds), and optional integer
+`destination_port` (default 5201). Two flows cannot target the same receiver
+host/port: an [iperf3 server handles one active test](https://github.com/esnet/iperf/blob/master/src/iperf_server_api.c).
+An alternate port requires an already-running receiver on that port. Receivers
+are never created, replaced, or killed by this API; a busy/unavailable external
+receiver is a measurement failure, not zero throughput.
+
+Each client uses an owned temporary `advnet-host:0.1` sidecar sharing its source
+host's [network namespace](https://docs.docker.com/engine/network/#container-networks),
+bound to the source data IP. Clients are prepared before counter collection and
+released together, with at most four workers. Sidecars have a 128 MiB memory
+limit, 32-process limit, and no added capabilities. On completion, timeout,
+interruption, or failure, local client subprocesses are reaped and only sidecars
+with this batch's ownership label are removed. Cleanup errors are explicit;
+preexisting host containers and receiver daemons are left alone.
+
+The result retains per-flow receiver throughput, packet loss, jitter/status,
+timings, raw iperf JSON text, and stderr. One counter snapshot brackets each end
+of the whole batch; directional link utilization uses that common elapsed
+window. Aggregate throughput is total receiver bytes divided by that window,
+not a sum of per-flow rates measured over different durations. Aggregate loss
+uses summed lost-packet/packet counts, not an average of percentages. Missing
+byte/packet totals leave the corresponding aggregate metric `null` with an
+`unavailable` status. Capacity denominators remain reference values unless
+shaping was explicitly enabled.
+
+`concurrency_verified` and `overlap_window` describe the intersection of the
+conservative sender intervals used in Phase 2. Missing timing or no common
+interval leaves concurrency unverified; simultaneous launch alone is not
+claimed as proof of simultaneous sending. Batch collection currently measures
+UDP performance and shared utilization; loaded ICMP RTT remains available in
+the existing single-flow mode. No aggregate jitter or latency improvement is
+inferred across different paths. Offline tests use mocked subprocesses:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -p test_concurrent_traffic.py -v
+```
+
 Use `--attempts 1` for a single-shot verified baseline and `--attempts 5` for the
 iterative verified loop, holding all other settings constant. This is not an
 exact reproduction of either cited paper. An unverified-agent ablation remains future work.

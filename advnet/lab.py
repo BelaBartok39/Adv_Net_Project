@@ -39,6 +39,24 @@ def full_neighbors(text):
             if re.match(r'^\d+\.\d+\.\d+\.\d+\s', line) and re.search(r'\bFULL\b', line)}
 
 
+def udp_metrics(data):
+    """Extract the existing receiver statistics for either traffic mode."""
+    if data.get('error'):
+        raise RuntimeError('Traffic generator failed: '+str(data['error']))
+    server = data.get('server_output_json',{}).get('end',{})
+    received = server.get('sum_received') or server.get('sum') or data.get('end',{}).get('sum_received')
+    if not received or received.get('sender') is not False or 'lost_percent' not in received:
+        raise ValueError('Receiver-side UDP results are missing')
+    # Keep unknown jitter explicit and never substitute sender estimates.
+    jitter = received.get('jitter_ms')
+    jitter_status = 'missing' if jitter is None else 'measured'
+    if jitter is not None and (type(jitter) not in (int, float) or not 0 <= jitter < math.inf):
+        jitter, jitter_status = None, 'invalid'
+    return {'received_mbps':received['bits_per_second']/1e6,
+            'loss_fraction':received['lost_percent']/100,
+            'jitter_ms':jitter,'jitter_status':jitter_status}, received
+
+
 def loaded_rtt(data, samples, elapsed):
     """Use only complete probes inside conservative iperf sender-time bounds.
 
@@ -211,6 +229,22 @@ class Lab:
                 break
         return samples
 
+    def _link_utilization(self, before, after, elapsed):
+        utilizations = {}
+        for link in self.manifest['links']:
+            for side in ('a','b'):
+                n,interface = link[side],link[side+'_interface']
+                delta = after[n][interface]-before[n][interface]
+                if delta<0:
+                    raise ValueError('Interface counter reset during measurement')
+                utilizations[f'{n}:{interface}'] = delta*8 / elapsed / (self.capacities[link['id']]*1e6)
+        return utilizations
+
+    def concurrent_traffic(self, flows, deadline):
+        """Measure 2–4 UDP clients together; leaves existing single-flow behavior intact."""
+        from .concurrent_traffic import run_concurrent_traffic
+        return run_concurrent_traffic(self, flows, deadline)
+
     def traffic(self, flow, deadline):
         a,b = flow['source'],flow['destination']
         seconds = flow.get('seconds',5)
@@ -233,38 +267,18 @@ class Lab:
             after = self.counters(deadline)
             samples = probes.result()
         data = json.loads(output)
-        if data.get('error'):
-            raise RuntimeError('Traffic generator failed: '+str(data['error']))
-        server = data.get('server_output_json',{}).get('end',{})
-        # A daemon started without -J returns server_output_text. iperf still
-        # includes the receiver's report in the client's end.sum_received.
-        received = server.get('sum_received') or server.get('sum') or data.get('end',{}).get('sum_received')
-        if not received or received.get('sender') is not False or 'lost_percent' not in received:
-            raise ValueError('Receiver-side UDP results are missing')
-        # iperf3 reports receiver interarrival jitter in milliseconds. Keep
-        # missing/invalid jitter unknown without discarding other valid metrics.
-        jitter = received.get('jitter_ms')
-        jitter_status = 'missing' if jitter is None else 'measured'
-        if jitter is not None and (type(jitter) not in (int, float) or not 0 <= jitter < math.inf):
-            jitter, jitter_status = None, 'invalid'
-        utilizations = {}
-        for link in self.manifest['links']:
-            for side in ('a','b'):
-                n,interface = link[side],link[side+'_interface']
-                delta = after[n][interface]-before[n][interface]
-                if delta<0:
-                    raise ValueError('Interface counter reset during measurement')
-                utilizations[f'{n}:{interface}'] = delta*8 / elapsed / (self.capacities[link['id']]*1e6)
+        metrics, _ = udp_metrics(data)
+        utilizations = self._link_utilization(before, after, elapsed)
         return {'source':a,'destination':b,'offered_mbps':flow['offered_mbps'],
                 'udp_datagram_bytes':1200,
-                'duration_seconds':elapsed,'received_mbps':received['bits_per_second']/1e6,
-                'loss_fraction':received['lost_percent']/100,
-                'jitter_ms':jitter,'jitter_status':jitter_status,
+                'duration_seconds':elapsed,**metrics,
                 'loaded_rtt':loaded_rtt(data, samples, elapsed),
                 'link_utilization':utilizations,'max_link_utilization':max(utilizations.values()),
                 'capacities_enforced':self.shaped,'link_capacities_mbps':dict(self.capacities)}
 
-    def measure(self, deadline, flow=None):
+    def measure(self, deadline, flow=None, *, flows=None):
+        if flow is not None and flows is not None:
+            raise ValueError('Specify either flow or flows, not both')
         neighbors = self.neighbors(deadline)
         expected = self.expected_neighbors()
         matrix = self.ping_matrix(deadline)
@@ -274,7 +288,8 @@ class Lab:
                 'mean_rtt_ms':mean(rtts) if rtts else None,
                 'ospf_healthy':all(full_neighbors(neighbors[n])==expected[n] for n in self.routers),
                 'ospf_neighbors':neighbors,
-                'traffic':self.traffic(flow,deadline) if flow else None}
+                'traffic':(self.concurrent_traffic(flows,deadline) if flows is not None
+                           else self.traffic(flow,deadline) if flow else None)}
 
     def observe(self, scenario_id, measurements, deadline, objective):
         configs = self.configs(deadline)
