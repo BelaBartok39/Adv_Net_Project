@@ -1,5 +1,6 @@
 """Containerlab cEOS observation, measurement, and bounded configuration transport."""
 import json
+import math
 import re
 import subprocess
 import time
@@ -149,6 +150,12 @@ class Lab:
         received = server.get('sum_received') or server.get('sum') or data.get('end',{}).get('sum_received')
         if not received or received.get('sender') is not False or 'lost_percent' not in received:
             raise ValueError('Receiver-side UDP results are missing')
+        # iperf3 reports receiver interarrival jitter in milliseconds. Keep
+        # missing/invalid jitter unknown without discarding other valid metrics.
+        jitter = received.get('jitter_ms')
+        jitter_status = 'missing' if jitter is None else 'measured'
+        if jitter is not None and (type(jitter) not in (int, float) or not 0 <= jitter < math.inf):
+            jitter, jitter_status = None, 'invalid'
         utilizations = {}
         for link in self.manifest['links']:
             for side in ('a','b'):
@@ -161,6 +168,7 @@ class Lab:
                 'udp_datagram_bytes':1200,
                 'duration_seconds':elapsed,'received_mbps':received['bits_per_second']/1e6,
                 'loss_fraction':received['lost_percent']/100,
+                'jitter_ms':jitter,'jitter_status':jitter_status,
                 'link_utilization':utilizations,'max_link_utilization':max(utilizations.values()),
                 'capacities_enforced':self.shaped,'link_capacities_mbps':dict(self.capacities)}
 

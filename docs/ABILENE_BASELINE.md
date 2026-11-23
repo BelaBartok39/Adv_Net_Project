@@ -334,6 +334,30 @@ For congestion, maximum sampled directional link utilization must improve by at
 least 5% compared with the impaired network, with the throughput/loss/connectivity
 guardrails above. Interface tx-byte deltas surround the same fixed-load iperf3
 receiver measurement. Capacity values are meaningful only when shaping succeeds.
+Traffic results also include receiver-side UDP interarrival `jitter_ms`, in
+milliseconds, from the same receiver summary used for throughput and loss.
+The existing selection order is server JSON `end.sum_received`, server JSON
+`end.sum`, then client JSON `end.sum_received` (including text-mode servers).
+The selected summary must identify `sender: false`; sender or interval estimates
+are not substituted for missing receiver jitter. A finite, nonnegative number
+has `jitter_status: "measured"`; absent or null jitter is `jitter_ms: null` with
+`jitter_status: "missing"`. Negative, nonfinite, boolean, or other nonnumeric
+values produce `jitter_ms: null` with `jitter_status: "invalid"`. A measured zero
+remains zero. Missing/invalid jitter preserves otherwise valid throughput, loss,
+and utilization measurements. Jitter is included in existing measurement files
+and decision observations, but does not change runtime acceptance thresholds.
+It measures packet-arrival variation, not RTT or one-way latency. See the
+[iperf3 receiver-summary implementation](https://github.com/esnet/iperf/blob/master/src/iperf_api.c).
+
+Offline coverage uses trimmed, synthetic iperf3-shaped JSON fixtures under
+`tests/fixtures/iperf3/`; these are not captured Abilene measurements or evidence
+of performance improvement. Reproduce receiver-summary selection, invalid/missing
+data handling, existing metric calculations, and observation/artifact propagation:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -p test_traffic_metrics.py -v
+```
+
 Idle ping measurements are taken before traffic, so they must NOT be described as
 latency under congestion. Future experiments should add sustained-load latency
 sampling and longer/repeated measurement windows. Sidecar and counter sampling
