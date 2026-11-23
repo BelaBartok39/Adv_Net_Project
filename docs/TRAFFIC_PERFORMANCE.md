@@ -144,9 +144,10 @@ their private network are removed, leaving preexisting containers alone.
 ## Dynamic workload definitions (offline only)
 
 `advnet.dynamic_workload` defines changing demand independently of the controller.
-This phase provides configuration validation and schedule resolution only. It
-does not execute events or provide a dynamic traffic CLI. The existing static
-traffic collectors, metrics, comparison reports, bounded campaigns, deployment
+These models provide configuration validation and schedule resolution. The
+offline scheduler is described below; a dynamic traffic CLI is still future
+work. Existing static traffic collectors, metrics, comparison reports, bounded
+campaigns, deployment
 thresholds, and frozen benchmark are unchanged.
 
 The definitions reuse `Contract`, `MAX_CONCURRENT_FLOWS`, and
@@ -154,7 +155,7 @@ The definitions reuse `Contract`, `MAX_CONCURRENT_FLOWS`, and
 `udp_metrics`, `loaded_rtt`, `Lab.counters`, and `Lab._link_utilization`, plus the
 owned-client pattern in `run_concurrent_traffic`. `Lab.traffic` and
 `run_concurrent_traffic` finish a bounded measurement before returning; dynamic
-arrivals and rate changes will need the separate scheduler in the next phase.
+arrivals and rate changes use the separate scheduler described below.
 The existing `compare_performance`, `compare_trial_artifacts`, `Trial`, and
 bounded experiment runner retain their current roles.
 
@@ -239,13 +240,109 @@ or reducing demand. The generator does not retry random draws to hide conflicts.
 Save the explicit resolved schedule for exact replay, including when no seed is
 supplied. Seeded regeneration assumes the same inputs and Python RNG behavior;
 a saved schedule requires no random draws. This phase's JSON round trips validate
-intended schedules only. Runtime timing, process cleanup, receiver availability,
-and live network performance require later scheduler and integration work.
+intended schedules only. The scheduler tests below exercise control-call timing
+and cleanup contracts with a fake backend. Process cleanup, receiver availability,
+and live network performance require later transport integration.
 
 Run the model tests without Docker, Batfish, clocks, or API calls:
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -p test_dynamic_workload.py -v
+```
+
+## Dynamic event scheduler (offline backend)
+
+`advnet.dynamic_scheduler.run_schedule` accepts a resolved schedule, the target
+manifest, and an injected `TrafficBackend`. It reparses the schedule (including
+model instances) and validates inventory before touching the backend. It uses
+`time.monotonic()` through an injectable `Clock` with `monotonic()` and
+`sleep(seconds)` methods. Unit tests advance fake time without real sleeping.
+There is no Docker or iperf3 backend in this phase, and the existing traffic CLI
+does not execute dynamic schedules yet.
+
+Backend methods have the following contract:
+
+| Method | Required behavior |
+| --- | --- |
+| `start(flow, offered_mbps, *, timeout_seconds)` | Register owned resources before allocation and return after initiating traffic, without waiting for the flow's lifetime. |
+| `set_rate(flow_id, offered_mbps, *, timeout_seconds)` | Apply the effective requested rate while preserving the flow identity. |
+| `stop(flow_id, *, timeout_seconds)` | Stop the flow and release its receiver endpoint before returning, allowing ordered port reuse. |
+| `poll(flow_id, *, timeout_seconds)` | Inspect current state without waiting for completion; return `None` while running or a `FlowExit` on exit. |
+| `cleanup(*, timeout_seconds)` | Attempt cleanup of every resource owned by this run, including partial starts; raise if cleanup fails. |
+
+Backend control calls must be short and respect their timeouts. The scheduler
+does not wait for a client's full traffic duration or use blocking completion
+collection. It polls active clients while waiting for the next event, so one
+flow can remain active when another arrives. Control calls execute synchronously
+in canonical schedule order; their latency can delay later calls. The scheduler
+records this delay and detects overruns after calls return. It cannot forcibly
+interrupt a backend that ignores its timeout. A future transport must bound its
+subprocess operations rather than relying on the scheduler as a hard watchdog.
+
+The backend should be dedicated to one run and should retain ownership records
+until cleanup is confirmed. A failed start may already have allocated resources;
+cleanup cannot depend only on successful starts. Receiver/process ownership and
+rate-change restart gaps remain requirements for the later iperf3 integration.
+
+Given `resolved` and `manifest` from the example above, and a backend implementing
+that contract:
+
+```python
+from threading import Event
+from advnet.dynamic_scheduler import ScheduleInterrupted, run_schedule
+
+cancellation = Event()  # Another component may call cancellation.set().
+try:
+    result = run_schedule(resolved, manifest, backend,
+                          cancelled=cancellation.is_set,
+                          operation_timeout_seconds=5,
+                          cleanup_timeout_seconds=10,
+                          poll_interval_seconds=0.1)
+except ScheduleInterrupted as interrupted:
+    result = interrupted.result  # Partial evidence is available after cleanup.
+    raise
+```
+
+`ScheduleResult` is separate from workload configuration and contains intended
+events, actual attempt times, completion times, lateness, per-event status and
+errors, unexpected client exits, and cleanup results. All timestamps are seconds
+relative to the same experiment start. These times describe backend control
+calls; they do not establish when packets actually started or stopped. Missing
+timing after clock failure remains `None`. Lateness is nonnegative, with tiny
+floating-point differences at timestamp boundaries clamped to zero. Absolute
+monotonic deadlines avoid repeatedly sleeping for unrepresentable residuals at
+decimal relative times such as 0.1 seconds.
+
+Departures, rate updates, and arrivals retain their resolved event order,
+including when a call is late. Later intended timestamps are never shifted to
+hide delays. A start or rate update whose flow lifetime has already elapsed
+aborts the run instead of generating expired demand. The scheduler also waits
+through an idle tail until the declared experiment duration, unless cancelled,
+interrupted, or timed out.
+
+The optional `timeout_seconds` is an exclusive budget from experiment start;
+no events are dispatched at or after its expiry. Its default is experiment
+duration plus `operation_timeout_seconds` (5 seconds by default), allowing a
+final stop at the experiment-duration boundary. Each operation receives the
+smaller of its configured timeout and the remaining run budget. Cleanup always
+runs in `finally` with a separate 10-second default budget, even when the run
+budget is exhausted or cancellation is set. These scheduler settings do not
+change existing deployment acceptance thresholds.
+
+Ordinary errors and any early client exit (even return code zero) stop further
+dispatch and return partial evidence. Unattempted events become `skipped`;
+failed attempts retain their error and timestamps. Cleanup errors remain
+separate from the primary error and prevent a successful run result. Status is
+`completed`, `failed`, `timed_out`, `cancelled`, or `interrupted`.
+`KeyboardInterrupt` propagates as `ScheduleInterrupted`, carrying `.result`,
+after cleanup. `SystemExit` is re-raised with `.schedule_result` attached.
+Cancellation and deadline checks occur between control calls and at most each
+poll interval while idle; backend call latency contributes to response time.
+
+Run both dynamic model and scheduler tests entirely offline:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -p 'test_dynamic*.py' -v
 ```
 
 ## Limits and future work
