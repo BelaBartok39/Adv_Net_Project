@@ -1,6 +1,7 @@
 import copy
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -50,6 +51,88 @@ class VisualizerTests(unittest.TestCase):
             self.assertIn('Content-Security-Policy:',headers)
         self.assertEqual(get(self.app,'/.env')[0],404)
         self.assertEqual(get(self.app,'/../../.env')[0],404)
+
+    def campaign_fixture(self):
+        campaign=self.root/'coverage'
+        jobs=[{'id':'one-off','scenario':'scenarios/one.json','system_one':'off','repetition':1},
+              {'id':'two-jev','scenario':'scenarios/two.json','system_one':'jev','repetition':1}]
+        campaign.mkdir()
+        (campaign/'plan.json').write_text(json.dumps({'jobs':jobs,'jev_threshold':.9}))
+        for job in jobs:
+            trial=campaign/'trials'/job['id'];trial.mkdir(parents=True)
+            (trial/'events.jsonl').write_text(json.dumps({'stage':'system_one_decision','status':'running',
+                                                        'at':'2026-11-23T12:00:00Z'})+'\n')
+        (campaign/'trials/one-off/result.json').write_text(json.dumps({'success':True,'attempts':1,
+                                                                     'cleanup_succeeded':True}))
+        return campaign
+
+    def test_campaign_discovery_uses_journal_time_and_keeps_pending_attempts(self):
+        campaign=self.campaign_fixture()
+        a=campaign/'trials/one-off';b=campaign/'trials/two-jev'
+        # Directory timestamps can be newer than the actual journal activity.
+        os.utime(a/'events.jsonl',(10,10));os.utime(a/'result.json',(10,10));os.utime(a,(1000,1000))
+        os.utime(b/'events.jsonl',(20,20));os.utime(b,(1,1))
+        attempt=b/'attempt-1';attempt.mkdir()
+        (attempt/'observation.json').write_text('{}')
+        artifacts=Artifacts(self.root)
+        self.assertEqual(artifacts.runs()[0]['id'],'coverage/trials/two-jev')
+        value=artifacts.experiment('coverage/trials/two-jev')
+        self.assertIsNone(value['attempts'][0]['decision'])
+        self.assertIsNotNone(value['attempts'][0]['started_at'])
+        progress=artifacts.campaign('coverage')
+        self.assertEqual((progress['completed'],progress['successful'],progress['total']),(1,1,2))
+        self.assertEqual(progress['jobs'][1]['status'],'running')
+        self.assertEqual(get(App(MANIFEST,self.root,CONFIGS,mode='files'),'/api/state')[0],200)
+
+    def test_campaign_replay_and_state_read_latest_decision_and_measurement(self):
+        campaign=self.campaign_fixture();trial=campaign/'trials/two-jev'
+        a=trial/'attempt-1';a.mkdir()
+        (a/'decision.json').write_text(json.dumps({'screening':{'selected':'enable_host_sea',
+            'selected_probability':.59,'effective_route':'escalate'},'calls':[{'stage':'llm',
+            'model':'test-model','usage':{'prompt_tokens':123,'completion_tokens':45}}]}))
+        (trial/'healthy-measurements.json').write_text(json.dumps({'observed_at':'2026-11-23T12:00:00Z',
+            'all_reachable':True,'ospf_healthy':True,'pairs':[],'ospf_neighbors':{}}))
+        os.utime(trial/'events.jsonl',None)
+        app=App(MANIFEST,self.root,CONFIGS,mode='files')
+        state=app.state()
+        self.assertEqual(state['campaign']['id'],'coverage')
+        self.assertEqual(state['experiment']['id'],'coverage/trials/two-jev')
+        self.assertEqual(state['experiment']['attempts'][0]['decision']['screening']['selected_probability'],.59)
+        self.assertEqual(state['frame']['source'],'recorded')
+        self.assertEqual(get(app,'/api/replay?run=coverage%2Ftrials%2Ftwo-jev')[0],200)
+
+    def test_nested_ids_and_symlinks_cannot_escape_artifact_root(self):
+        self.campaign_fixture()
+        artifacts=Artifacts(self.root)
+        for name in ('coverage/../one','coverage/trials/../../secret','coverage/other/one',
+                     'coverage/trials/one/extra','/coverage/trials/one'):
+            with self.subTest(name=name),self.assertRaises(ValueError):
+                artifacts.run(name)
+        with tempfile.TemporaryDirectory() as outside:
+            (self.root/'coverage/trials/escape').symlink_to(outside,target_is_directory=True)
+            with self.assertRaises(ValueError):
+                artifacts.experiment('coverage/trials/escape')
+            self.assertNotIn('coverage/trials/escape',[r['id'] for r in artifacts.runs()])
+
+    def test_relay_reuses_existing_observer_and_never_starts_a_monitor(self):
+        app=App(MANIFEST,self.root,CONFIGS,mode='relay',observer_port=8765)
+        upstream={'frame':{'source':'live','sampled_at':'2026-11-23T12:00:00Z','errors':[]},
+                  'recording':'existing.jsonl'}
+        with patch('advnet.visualizer.urllib.request.urlopen',return_value=io.BytesIO(json.dumps(upstream).encode())) as fetch:
+            first=app.state();second=app.state()
+        self.assertIsNone(app.monitor)
+        self.assertIsNone(app.record_path)
+        self.assertEqual(fetch.call_count,1)
+        self.assertEqual(first['frame'],upstream['frame'])
+        self.assertEqual(second['recording'],'existing.jsonl')
+        self.assertEqual(get(app,'/api/path?source=sea&destination=sva')[0],400)
+
+    def test_relay_failure_is_explicit_and_does_not_invent_live_measurements(self):
+        app=App(MANIFEST,self.root,CONFIGS,mode='relay',observer_port=8765)
+        with patch('advnet.visualizer.urllib.request.urlopen',side_effect=OSError('offline')):
+            state=app.state()
+        self.assertIn('stale',state['frame']['errors'][0])
+        self.assertFalse(state['frame']['nodes'])
 
     def test_demo_state_and_replay_are_explicitly_synthetic(self):
         status,body,_=get(self.app,'/api/state')

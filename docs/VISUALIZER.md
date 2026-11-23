@@ -6,6 +6,49 @@ inject faults, start model calls, or launch experiments. No new Python or Node
 dependencies are required beyond the project's existing Python environment.
 The web assets are local files; there are no CDN or external font dependencies.
 
+## Campaign and decision monitoring
+
+The dashboard follows both standalone trials and campaign trials under
+`runs/<campaign>/trials/<trial>/`. It selects the latest journal activity,
+shows campaign progress and per-trial outcomes, and automatically follows new
+decision attempts. The decision monitor separates Jev's raw choice/probability
+from its effective route, including low-probability escalation and bypass after
+rejection. Jev and LLM calls show their actual recorded model, duration, token
+usage, reported cost, and errors. The inspector retains diagnosis, diffs,
+Batfish results, and runtime acceptance. Disable **Follow latest attempt** to
+inspect an earlier attempt.
+
+Journals update every two seconds independently of telemetry collection. The
+current decision subprocess records its result after Jev and any LLM fallback
+finish; pending calls remain labeled pending rather than displaying invented
+intermediate outcomes. Short API calls can complete between UI refreshes, but
+their results remain visible. Traffic is generated during measurement stages;
+quiet configuration, inference, verification, and convergence stages are normal.
+
+### Observe an active campaign from a separate checkout
+
+Campaigns freeze Python source hashes, including visualizer modules. Keep the
+campaign checkout unchanged while it runs. An enhanced dashboard in another
+checkout can reuse the original observer, avoiding another Docker collector:
+
+```bash
+# From the original campaign checkout, keep the existing observer running:
+sudo .venv/bin/python -m advnet.visualizer --port 8765
+
+# From the checkout containing the dashboard changes, in another terminal:
+/path/to/campaign-repo/.venv/bin/python -m advnet.visualizer \
+  --manifest /path/to/campaign-repo/topologies/abilene.json \
+  --runs /path/to/campaign-repo/runs --observer-port 8765 --port 8766
+```
+
+Open **http://localhost:8766**. This mode only reads artifacts and the existing
+localhost observer's API; it does not collect Docker telemetry, record a second
+observer session, or send path probes. Keep port 8765 running. If it becomes
+unavailable, the dashboard labels telemetry stale while continuing to follow
+campaign journals. It reconnects automatically when the observer returns.
+Files-only mode also follows campaigns, with the map explicitly showing saved
+measurement checkpoints.
+
 ## Live dashboard
 
 From the project root, in your regular desktop terminal:
@@ -144,6 +187,7 @@ as measured experiment results. The banner always identifies the synthetic mode.
 python3 -m unittest discover -s tests -v
 node --check advnet/web/app.js
 node scripts/check-visualizer-browser.mjs
+node scripts/check-campaign-browser.mjs
 ```
 
 Backend tests cover HTTP responses and SSE using a socketless transport, replay
@@ -155,6 +199,12 @@ replay, then stops its owned processes. It makes no Docker or model calls.
 Headless Chromium checks have passed, and the live Seattle-to-New-York trace has
 been verified through the dashboard API. Additional live telemetry and repair
 experiments still require Docker access.
+
+The campaign browser check uses synthetic files and real SSE updates to exercise
+nested discovery, pending decisions, Jev escalation, both SDK token formats,
+automatic attempt following, progress, replay cutoffs, and mobile layout. It
+makes no Docker or hosted model calls. Set `ADVNET_PYTHON` to the virtualenv's
+Python executable when running either browser script if needed.
 
 - `advnet/visualizer.py`: local HTTP server, SSE snapshots, demo, replay orchestration.
 - `advnet/observer.py`: Docker state, read-only EOS sampling, counters, ICMP traceroute.

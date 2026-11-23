@@ -2,7 +2,7 @@ import {spawn} from 'node:child_process';
 import {writeFile} from 'node:fs/promises';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const port=18766;
-const server=spawn('python3',['-m','advnet.visualizer','--demo','--port',String(port),'--no-record'],{stdio:['ignore','pipe','pipe']});
+const server=spawn(process.env.ADVNET_PYTHON||'python3',['-m','advnet.visualizer','--demo','--port',String(port),'--no-record'],{stdio:['ignore','pipe','pipe']});
 let chrome,seq=0,session;const pending=new Map();let buffer='';const errors=[];
 function send(method,params={},sessionId){return new Promise((resolve,reject)=>{const id=++seq;pending.set(id,{resolve,reject});chrome.stdio[3].write(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})})+'\0');});}
 async function evaluate(expression){const r=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true},session);if(r.exceptionDetails)throw new Error(JSON.stringify(r.exceptionDetails));return r.result.value;}

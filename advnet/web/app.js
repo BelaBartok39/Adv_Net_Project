@@ -2,11 +2,12 @@
 const $ = id => document.getElementById(id);
 const NS = 'http://www.w3.org/2000/svg';
 const positions = {sea:[145,110],sva:[100,320],lax:[165,510],den:[365,235],kcy:[545,290],hou:[540,525],atl:[770,440],ind:[745,250],chi:[660,100],was:[970,325],nyc:[1000,135]};
-const stageNames = {path_probe:'Path probe',checkpoint_healthy:'Checkpoint',measure_healthy:'Healthy baseline',verify_healthy:'Verify baseline',initial_convergence:'Routing stable',inject_fault:'Fault injection',inject_capacity_change:'Link impairment',fault_convergence:'Fault convergence',measure_impaired:'Measure impairment',observe:'Collect state',llm_decision:'LLM reasoning',verify_candidate:'Batfish verification',deploy:'Apply candidate',post_deploy_convergence:'Converge',measure_candidate:'Measure outcome',rollback_candidate:'Roll back',harness_reset_not_a_repair:'Harness reset',verify_reset_runtime:'Check reset',restore_capacities:'Restore capacity'};
+const stageNames = {restore_baseline:'Restore source baseline',baseline_capacities:'Reset link capacities',path_probe:'Path probe',checkpoint_healthy:'Checkpoint',measure_healthy:'Healthy baseline',verify_healthy:'Verify baseline',initial_convergence:'Wait for healthy OSPF',inject_fault:'Fault injection',inject_capacity_change:'Link impairment',fault_convergence:'Fault convergence',measure_impaired:'Measure impairment',observe:'Collect state',llm_decision:'LLM decision',system_one_decision:'Jev screening / LLM fallback',verify_candidate:'Batfish verification',deploy:'Apply candidate',post_deploy_convergence:'Wait for OSPF recovery',measure_candidate:'Measure outcome',rollback_candidate:'Roll back',harness_reset_not_a_repair:'Harness reset',reset_convergence:'Wait for reset OSPF',verify_reset_runtime:'Check reset',restore_capacities:'Restore capacity',validate_healthy_traffic:'Check healthy flow overlap',validate_impaired_traffic:'Check impaired flow overlap'};
 let topology, latest, frame, experiment, observedPath, paused=false, replay=null, replayIndex=0, player=null;
 let selected='sea', selectedLink=null, activeTab='device', selectedEvent=null, zoom=1, stream;
 let history=[], lastHistoryTime=null, edges=new Map(), routers=new Map(), hosts=new Map();
 let probeState={status:'idle',message:''};
+let lastExperimentId=null;
 const node = (tag, attrs={}, text) => {const el=document.createElementNS(NS,tag);for(const [k,v] of Object.entries(attrs))el.setAttribute(k,v);if(text!==undefined)el.textContent=text;return el;};
 const html = (tag, cls='', text) => {const el=document.createElement(tag);if(cls)el.className=cls;if(text!==undefined)el.textContent=text;return el;};
 const fmt = (value, digits=1) => typeof value==='number'&&Number.isFinite(value)?value.toFixed(digits):'—';
@@ -64,11 +65,45 @@ function renderSummary(){
  const notice=$('notice');let message;
  if(replay){pill('connection','REPLAY','warning');notice.className='notice warning';message=`Recorded observations · ${replay.id} · checkpoint ${replayIndex+1} of ${replay.frames.length}. Gaps are not interpolated.`;}
  else if(latest?.mode==='demo'){pill('connection','DEMO / SYNTHETIC','warning');notice.className='notice warning';message='DEMONSTRATION ONLY — simulated traffic, model decisions, and verification. No Docker commands or API calls.';}
- else if(latest?.mode==='files'){pill('connection','FILES ONLY','muted');notice.className='notice';message='Recorded experiment files only. No Docker access, background probes, or live network measurements.';}
+ else if(latest?.mode==='files'){pill('connection','FILES ONLY','muted');notice.className='notice';message='Experiment files update live; the map shows the last recorded measurement checkpoint, not continuous telemetry.';}
+ else if(latest?.mode==='relay'){pill('connection',frame?.errors?.length?'OBSERVER STALE':'EXISTING OBSERVER',frame?.errors?.length?'warning':'good');notice.className=frame?.errors?.length?'notice warning':'notice';message=frame?.errors?.length?frame.errors.join(' · '):`Live telemetry from observer :${latest.observer_port}. No additional Docker polling. Campaign artifacts refresh every two seconds.`;}
  else if(frame?.errors?.length){pill('connection','TELEMETRY LIMITED','warning');notice.className='notice warning';message=frame.errors.join(' · ');}
  else{pill('connection','LIVE OBSERVER','good');notice.className='notice';message='Read-only telemetry. Manual path probes send ICMP traffic. Counter animation represents rates, not individual packets.';}
  if(paused&&!replay)message+=' View paused; collection and recording continue.';notice.textContent=message;
  set('recording-state',latest?.recording?`Recording ${latest.recording}`:'Not recording');
+}
+function callCards(id,calls){
+ const box=$(id);box.replaceChildren();
+ for(const call of calls){const usage=call.usage||{},cost=usage.cost??usage.cost_usd;
+  const row=html('div','model-call');row.append(html('strong','',call.model||'Model unavailable'),html('span','small',`${call.error_type||'Completed'} · ${fmt(call.elapsed_ms/1000,2)} s`),html('span','small',`Tokens in ${usage.input_tokens??usage.prompt_tokens??'unknown'} / out ${usage.output_tokens??usage.completion_tokens??'unknown'} · cost ${typeof cost==='number'?'$'+cost.toFixed(6):'unknown'}`));box.append(row);
+ }
+}
+function renderDecisionMonitor(){
+ const attempt=experiment?.attempts?.at(-1),decision=attempt?.decision,screen=decision?.screening||{};
+ const phase=experiment?.events?.at(-1),campaign=!replay?latest?.campaign:null,job=campaign?.jobs?.find(j=>j.id===experiment?.id);
+ const mode=job?.mode||(experiment?.result?.mode==='jev_llm'?'jev':experiment?.result?.mode==='llm_only'?'off':null);
+ const calls=decision?.calls||[],jev=calls.filter(c=>c.stage==='jev'),llm=calls.filter(c=>(c.stage||'llm')==='llm');
+ const allCalls=(experiment?.attempts||[]).flatMap(a=>a.decision?.calls||[]);
+ set('active-trial',experiment?.scenario?.name||experiment?.id?.split('/').at(-1)||'Waiting for a trial');
+ pill('decision-mode',mode==='jev'?'JEV + LLM':mode==='off'?'LLM ONLY':experiment?'DECISION PIPELINE':'NO TRIAL',experiment?'good':'muted');
+ set('active-phase',experiment?.result?(experiment.result.success?'Runtime accepted':'Trial ended without acceptance'):phase?(stageNames[phase.stage]||phase.stage.replaceAll('_',' ')):'Waiting for a journal');
+ set('phase-elapsed',phase&&!experiment?.result?phase.status==='running'?` · running ${fmt(Math.max(0,(Date.now()-Date.parse(phase.at))/1000),0)} s`:` · ${phase.status} (${fmt(phase.elapsed_seconds,1)} s)`:'');
+ set('active-calls',`Recorded requests · Jev ${allCalls.filter(c=>c.stage==='jev').length} · LLM ${allCalls.filter(c=>(c.stage||'llm')==='llm').length}${attempt?' · '+attempt.id:''}`);
+ const pending=['llm_decision','system_one_decision'].includes(phase?.stage)&&phase.status==='running';
+ set('jev-route',mode==='off'?'Disabled for this arm':screen.bypassed?'Screening bypassed':screen.selected?screen.selected:screen.error_type?'Screening failed':pending&&phase.stage==='system_one_decision'?'Decision in progress':'Pending decision');
+ set('jev-detail',screen.selected?`Choice probability ${fmt(screen.selected_probability*100,0)}% · threshold ${fmt((campaign?.settings?.jev_threshold??experiment?.result?.decision_settings?.jev_threshold??.9)*100,0)}% · effective route: ${screen.effective_route}`:screen.bypassed?(screen.reason||'LLM-only mode').replaceAll('_',' '):screen.error_type?`${screen.error_type}; effective route ${screen.effective_route}`:pending&&mode!=='off'?'Jev and any LLM fallback are one journal stage. The exact route appears when the decision returns.':'');
+ set('llm-route',llm.length?(llm.some(c=>c.error_type)?'Request failed':'Response recorded'):decision&&screen.effective_route&&screen.effective_route!=='escalate'?'Not called — Jev shortcut':pending?'Awaiting decision result':'Pending decision');
+ set('llm-detail',llm.length?`${llm.length} request(s) in this attempt`:pending?'A pending decision is not counted as a completed API call.':decision&&screen.effective_route!=='escalate'?'The catalog proposal still requires Batfish and live acceptance.':'');
+ callCards('jev-calls',jev);callCards('llm-calls',llm);
+ const p=decision?.proposal,gate=attempt?.verification,accept=attempt?.acceptance;
+ set('candidate-state',accept?accept.accepted?'Runtime accepted':'Runtime rejected':gate?gate.accepted?'Batfish approved':'Batfish rejected':p?.outcome==='candidate'?'Proposed changes':p?.outcome==='needs_observation'?'More evidence requested':decision?.status==='decision_error'?'Decision error':pending?'Awaiting proposal':'No proposal yet');
+ set('candidate-detail',p?.changes?.length?p.changes.map(c=>`${c.device.toUpperCase()} ${c.interface}: ${c.action.replaceAll('_',' ')} → ${c.value}`).join(' · '):p?.diagnosis||decision?.error_type||'');
+ const traffic=experiment?.scenario?.flows||[experiment?.scenario?.flow].filter(Boolean);
+ set('decision-freshness',traffic.length?`Traffic is sent during measurement stages: ${traffic.map(f=>`${f.source.toUpperCase()} → ${f.destination.toUpperCase()} ${f.offered_mbps} Mbps / ${f.seconds}s`).join(' · ')}. Other stages can be quiet.`:'Trial journals refresh every two seconds. Traffic animations show measured rates; repair trials do not generate continuous background traffic.');
+ const panel=$('campaign-panel');panel.classList.toggle('hidden',!campaign);
+ if(campaign){set('campaign-name',campaign.id);set('campaign-count',`${campaign.completed} / ${campaign.total} complete`);set('campaign-outcomes',`${campaign.successful} accepted · ${campaign.failed} failed`);$('campaign-progress').max=campaign.total||1;$('campaign-progress').value=campaign.completed;
+  const body=$('campaign-jobs'),signature=JSON.stringify(campaign.jobs);if(body.dataset.signature!==signature){body.replaceChildren();for(const row of campaign.jobs){const tr=html('tr',row.id===experiment?.id?'current-job':'');for(const text of [row.index,row.scenario,row.mode==='jev'?'Jev + LLM':'LLM only',row.status,row.seconds===null?'—':fmt(row.seconds,1)+' s'])tr.append(html('td','',text));body.append(tr);}body.dataset.signature=signature;}
+ }
 }
 function sparkline(parent,key){const values=history.map(f=>{const l=f.links?.find(x=>x.id===key);return l&&typeof l.a_mbps==='number'?Math.max(l.a_mbps,l.b_mbps||0):null;}).filter(v=>v!==null);if(values.length<2){parent.append(html('p','small','Rate history appears after multiple live counter samples.'));return;}
  const svg=node('svg',{viewBox:'0 0 320 75',class:'chart','aria-label':'Recent directional peak rate history'});svg.append(node('line',{x1:0,y1:65,x2:320,y2:65}));const max=Math.max(.01,...values);svg.append(node('polyline',{points:values.map((v,i)=>`${i*320/(values.length-1)},${65-v/max*53}`).join(' ')}));parent.append(svg,html('p','small',`Recent peak: ${fmt(max,3)} Mbps · ${values.length} samples`));}
@@ -86,10 +121,11 @@ function renderInspector(){
 }
 function renderChanges(){
  const items=experiment?.attempts||[], select=$('attempt-select'), previous=select.value;
- const signature=items.map(a=>a.id).join('|');if(select.dataset.signature!==signature){select.replaceChildren();for(const a of items){const option=html('option','',a.id);option.value=a.id;select.append(option);}select.value=items.some(a=>a.id===previous)?previous:items.at(-1)?.id||'';select.dataset.signature=signature;}
+ const signature=experiment?.id+'|'+items.map(a=>a.id).join('|');if(select.dataset.signature!==signature){select.replaceChildren();for(const a of items){const option=html('option','',a.id);option.value=a.id;select.append(option);}select.value=items.some(a=>a.id===previous)?previous:items.at(-1)?.id||'';select.dataset.signature=signature;}if($('follow-attempt').checked)select.value=items.at(-1)?.id||'';
  select.disabled=!items.length;const container=$('change-content');container.replaceChildren();
  if(selectedEvent){container.append(html('div','change-title',stageNames[selectedEvent.stage]||selectedEvent.stage),html('p','small',`${selectedEvent.status||'complete'} · ${clock(selectedEvent.at)} · ${fmt(selectedEvent.elapsed_seconds,2)} s`));}
- const attempt=items.find(a=>a.id===select.value)||items.at(-1);if(!attempt){container.append(html('div','empty','No LLM candidate has been recorded. Decisions and diffs appear when a trial reaches that stage.'));return;}
+ const attempt=items.find(a=>a.id===select.value)||items.at(-1);if(!attempt||!attempt.decision){container.append(html('div','empty',attempt?'Decision in progress. Completed Jev and LLM calls will appear when the decision returns.':'No decision yet. This trial has not reached its decision stage.'));return;}
+ const screen=attempt.decision.screening||{};container.append(html('div','section-label','JEV / ROUTING'),html('p','small',screen.selected?`Selected ${screen.selected} at ${fmt(screen.selected_probability*100,0)}%; effective route ${screen.effective_route}.`:screen.bypassed?`Bypassed: ${screen.reason||'LLM-only arm'}.`:screen.error_type||'No screening result recorded.'));
  const p=attempt.decision?.proposal;container.append(html('div','change-title','Diagnosis'),html('p','change-copy',p?.diagnosis||'The model did not return a valid candidate.'));
  for(const evidence of p?.evidence||[])container.append(html('p','small','↳ '+evidence));
  for(const [name,diff] of Object.entries(attempt.diffs||{})){container.append(html('div','section-label',name.toUpperCase()+' · PROPOSED DIFF'));const pre=html('div','diff');for(const line of diff.split('\n'))pre.append(html('div','diff-line '+(line.startsWith('+++')||line.startsWith('---')||line.startsWith('@@')?'header':line.startsWith('+')?'add':line.startsWith('-')?'remove':''),line||' '));container.append(pre);}
@@ -97,7 +133,7 @@ function renderChanges(){
  const gate=attempt.verification, acceptance=attempt.acceptance;container.append(html('div','section-label','VERIFICATION / RUNTIME'));
  for(const [name,report] of [['Batfish',gate],['Runtime',acceptance]]){container.append(html('p','small',`${name}: ${report?(report.accepted?'accepted':'rejected'):'pending / not recorded'}`));for(const detail of report?.details||[])container.append(html('p','small',detail));}
  if(p?.expected_effect)container.append(html('p','small','Expected effect: '+p.expected_effect));
- const calls=attempt.decision?.calls||[];for(const call of calls)container.append(html('p','small',`${call.model||'model unavailable'} · ${fmt(call.elapsed_ms,0)} ms · input tokens ${call.usage?.input_tokens??'unknown'}`));
+ const calls=attempt.decision?.calls||[];for(const call of calls)container.append(html('p','small',`${(call.stage||'llm').toUpperCase()} · ${call.model||call.error_type||'model unavailable'} · ${fmt(call.elapsed_ms,0)} ms · input tokens ${call.usage?.input_tokens??call.usage?.prompt_tokens??'unknown'} · output tokens ${call.usage?.output_tokens??call.usage?.completion_tokens??'unknown'}`));
 }
 function observerEvents(){
  if(!replay)return latest?.observer_events||[];
@@ -117,7 +153,7 @@ function renderTimeline(){
   else compressed.push(e);
  }
  const signature=JSON.stringify(compressed.slice(-40));if($('timeline').dataset.signature===signature)return;$('timeline').dataset.signature=signature;
- const timeline=$('timeline');timeline.replaceChildren();
+ const timeline=$('timeline'),follow=timeline.scrollLeft+timeline.clientWidth>=timeline.scrollWidth-40;timeline.replaceChildren();
  for(const event of compressed.slice(-40)){
   const button=html('button','event '+(event.status||'complete'));
   const title=event.stage==='path_probe'?`Probe ${event.source.toUpperCase()} → ${event.destination.toUpperCase()}`:stageNames[event.stage]||event.stage.replaceAll('_',' ');
@@ -127,10 +163,11 @@ function renderTimeline(){
   timeline.append(button);
  }
  if(!compressed.length)timeline.append(html('div','empty','No observer activity or LLM experiment recorded yet.'));
+ if(follow)timeline.scrollLeft=timeline.scrollWidth;
 }
 function renderPath(){
  const busy=probeState.status==='running'&&!replay, button=$('probe');
- button.disabled=busy||!!replay||latest?.mode==='files';button.textContent=busy?'Probing…':'Probe path ↗';
+ button.disabled=busy||!!replay||['files','relay'].includes(latest?.mode);button.textContent=busy?'Probing…':'Probe path ↗';
  $('flow-source').disabled=busy;$('flow-destination').disabled=busy;$('load-replay').disabled=busy;
  if(busy){set('path-description',probeState.message);return;}
  if(probeState.status==='failed'&&!replay){set('path-description',probeState.message);$('path-description').classList.remove('active');return;}
@@ -144,9 +181,9 @@ function renderPath(){
  const errors=Object.keys(p.address_collection_errors||{}).length?'\nAddress collection unavailable on: '+Object.keys(p.address_collection_errors).join(', '):'';
  set('trace-output',(p.raw||p.evidence||'')+missing+errors);
 }
-function updateRecordings(){const select=$('recording'), current=select.value;const list=latest?.runs||[],signature=JSON.stringify(list.map(r=>[r.id,r.complete]));if(select.dataset.signature===signature)return;select.replaceChildren(html('option','','Choose a recording…'));select.firstChild.value='';for(const r of list){const option=html('option','',`${r.kind==='telemetry'?'Observer':'Trial'} · ${r.label}`);option.value=r.id;select.append(option);}if([...select.options].some(o=>o.value===current))select.value=current;select.dataset.signature=signature;}
-function render(){if(!topology||!frame)return;renderSummary();renderMap();renderInspector();renderTimeline();renderPath();updateRecordings();}
-function currentState(state){latest=state;updateRecordings();if(paused||replay)return;frame=state.frame;experiment=state.experiment;const p=state.path;if(!['running','failed'].includes(probeState.status)&&p&&p.source===$('flow-source').value&&p.destination===$('flow-destination').value)observedPath=p;
+function updateRecordings(){const select=$('recording'), current=select.value;const list=latest?.runs||[],signature=JSON.stringify(list.map(r=>[r.id,r.complete]));if(select.dataset.signature===signature)return;select.replaceChildren(html('option','','Choose a recording…'));select.firstChild.value='';for(const r of list){const mode=r.mode==='jev_llm'?' · Jev + LLM':r.mode==='llm_only'?' · LLM only':'';const option=html('option','',`${r.kind==='telemetry'?'Observer':'Trial'} · ${r.label}${mode}`);option.value=r.id;select.append(option);}if([...select.options].some(o=>o.value===current))select.value=current;select.dataset.signature=signature;}
+function render(){if(!topology||!frame)return;renderSummary();renderDecisionMonitor();renderMap();renderInspector();renderTimeline();renderPath();updateRecordings();}
+function currentState(state){latest=state;updateRecordings();if(paused||replay)return;frame=state.frame;experiment=state.experiment;if(experiment?.id!==lastExperimentId){selectedEvent=null;lastExperimentId=experiment?.id;$('follow-attempt').checked=true;}const p=state.path;if(!['running','failed'].includes(probeState.status)&&p&&p.source===$('flow-source').value&&p.destination===$('flow-destination').value)observedPath=p;
  if(frame.sampled_at!==lastHistoryTime){history.push(frame);history=history.slice(-90);lastHistoryTime=frame.sampled_at;}render();}
 async function probe(){
  if(replay||probeState.status==='running')return;
@@ -163,7 +200,7 @@ async function probe(){
  renderMap();renderPath();renderTimeline();
 }
 function replayFrame(index){if(!replay?.frames.length)return;replayIndex=Math.max(0,Math.min(replay.frames.length-1,index));const f=replay.frames[replayIndex];frame=f.telemetry||f;
- if(replay.kind==='experiment'){const cutoff=f.sort_time*1000;experiment={...replay,result:replay.result_at*1000<=cutoff?replay.result:null,events:replay.events.filter(e=>Date.parse(e.at)<=cutoff),attempts:replay.attempts.filter(a=>a.decision_at*1000<=cutoff).map(a=>({...a,verification:a.verification_at*1000<=cutoff?a.verification:null,acceptance:a.acceptance_at*1000<=cutoff?a.acceptance:null}))};}
+ if(replay.kind==='experiment'){const cutoff=f.sort_time*1000;experiment={...replay,result:replay.result_at*1000<=cutoff?replay.result:null,events:replay.events.filter(e=>Date.parse(e.at)<=cutoff),attempts:replay.attempts.filter(a=>(a.decision_at??a.started_at)*1000<=cutoff).map(a=>({...a,verification:a.verification_at*1000<=cutoff?a.verification:null,acceptance:a.acceptance_at*1000<=cutoff?a.acceptance:null}))};}
  else experiment=f.experiment||null;
  observedPath=f.path?.source===$('flow-source').value&&f.path?.destination===$('flow-destination').value?f.path:null;if(!observedPath){const paths=(replay.paths||[]).filter(p=>p.source===$('flow-source').value&&p.destination===$('flow-destination').value&&Date.parse(p.sampled_at)<=Date.parse(frame.sampled_at));observedPath=paths.at(-1)||null;}
  history=replay.frames.slice(Math.max(0,replayIndex-89),replayIndex+1).map(f=>f.telemetry||f);$('scrubber').value=replayIndex;set('replay-position',`${replayIndex+1} / ${replay.frames.length}`);render();}
@@ -172,7 +209,7 @@ async function loadReplay(){const id=$('recording').value;if(!id)return;stopPlay
 function returnLive(){stopPlayer();replay=null;paused=false;history=[];observedPath=null;lastHistoryTime=null;$('pause').disabled=false;$('pause').textContent='Pause view';$('return-live').disabled=true;$('play').disabled=true;$('scrubber').disabled=true;set('replay-position','Current view');if(latest)currentState(latest);}
 function changeZoom(delta){zoom=Math.min(1.8,Math.max(.6,zoom+delta));$('viewport').setAttribute('transform',`translate(${560*(1-zoom)},${325*(1-zoom)}) scale(${zoom})`);}
 async function init(){try{topology=await api('/api/topology');buildMap();for(const id of ['flow-source','flow-destination'])for(const [name,r] of Object.entries(topology.routers)){const option=html('option','',r.site);option.value=name;$(id).append(option);}$('flow-source').value='sea';$('flow-destination').value='sva';
- document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{activeTab=b.dataset.tab;renderInspector();}));$('attempt-select').addEventListener('change',renderChanges);$('probe').addEventListener('click',probe);
+ document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{activeTab=b.dataset.tab;renderInspector();}));$('attempt-select').addEventListener('change',()=>{$('follow-attempt').checked=false;renderChanges();});$('follow-attempt').addEventListener('change',renderChanges);$('inspect-decision').addEventListener('click',()=>{activeTab='changes';renderInspector();});$('probe').addEventListener('click',probe);
  for(const id of ['flow-source','flow-destination'])$(id).addEventListener('change',()=>{observedPath=null;probeState={status:'idle',message:''};renderMap();renderPath();if(replay)replayFrame(replayIndex);});
  $('animate').addEventListener('change',e=>$('topology').classList.toggle('no-animation',!e.target.checked));$('pause').addEventListener('click',()=>{paused=!paused;$('pause').textContent=paused?'Resume view':'Pause view';if(!paused&&latest)currentState(latest);else renderSummary();});
  $('zoom-in').addEventListener('click',()=>changeZoom(.15));$('zoom-out').addEventListener('click',()=>changeZoom(-.15));$('fit').addEventListener('click',()=>{zoom=1;changeZoom(0);});$('load-replay').addEventListener('click',loadReplay);$('return-live').addEventListener('click',returnLive);$('scrubber').addEventListener('input',e=>{stopPlayer();replayFrame(Number(e.target.value));});
