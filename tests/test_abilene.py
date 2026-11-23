@@ -113,7 +113,7 @@ class AbileneTests(unittest.TestCase):
         counters={n:{i:0 for i in r['transit_interfaces']} for n,r in MANIFEST['routers'].items()}
         report={'end':{'sum_received':{'sender':False,'bits_per_second':4_900_000,'lost_percent':0.2}},
                 'server_output_text':'Text-mode server output'}
-        with patch.object(lab,'counters',return_value=counters), patch('advnet.lab.command',return_value=json.dumps(report)) as run:
+        with patch.object(lab,'counters',return_value=counters), patch.object(lab,'_sample_loaded_rtt',return_value=[]), patch('advnet.lab.command',return_value=json.dumps(report)) as run:
             result=lab.traffic({'source':'sea','destination':'nyc','seconds':3,'offered_mbps':5},Deadline(30))
         self.assertEqual(result['received_mbps'],4.9)
         self.assertEqual(result['loss_fraction'],0.002)
@@ -125,7 +125,7 @@ class AbileneTests(unittest.TestCase):
         counters={n:{i:0 for i in r['transit_interfaces']} for n,r in MANIFEST['routers'].items()}
         for end in ({'sum_sent':{'sender':True,'bits_per_second':5_000_000,'lost_percent':0}},
                     {'sum_received':{'sender':True,'bits_per_second':5_000_000,'lost_percent':0}}):
-            with self.subTest(end=end), patch.object(lab,'counters',return_value=counters), patch('advnet.lab.command',return_value=json.dumps({'end':end})):
+            with self.subTest(end=end), patch.object(lab,'counters',return_value=counters), patch.object(lab,'_sample_loaded_rtt',return_value=[]), patch('advnet.lab.command',return_value=json.dumps({'end':end})):
                 with self.assertRaisesRegex(ValueError,'Receiver-side'):
                     lab.traffic({'source':'sea','destination':'nyc','seconds':3,'offered_mbps':5},Deadline(30))
 

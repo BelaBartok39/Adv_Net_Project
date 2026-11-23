@@ -30,6 +30,7 @@ class TrafficMetricsTests(unittest.TestCase):
         deadline = Mock(spec=Deadline)
         deadline.remaining.return_value = 30
         with patch.object(lab, 'counters', side_effect=[before, after]), \
+                patch.object(lab, '_sample_loaded_rtt', return_value=[]), \
                 patch('advnet.lab.command', return_value=json.dumps(report)) as run, \
                 patch('advnet.lab.time.monotonic', side_effect=[100, 102]):
             result = lab.traffic(FLOW, deadline)

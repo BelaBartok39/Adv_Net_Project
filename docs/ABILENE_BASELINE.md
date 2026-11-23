@@ -358,10 +358,59 @@ data handling, existing metric calculations, and observation/artifact propagatio
 .venv/bin/python -m unittest discover -s tests -p test_traffic_metrics.py -v
 ```
 
-Idle ping measurements are taken before traffic, so they must NOT be described as
-latency under congestion. Future experiments should add sustained-load latency
-sampling and longer/repeated measurement windows. Sidecar and counter sampling
-overhead should also be characterized before interpreting small differences.
+The existing `mean_rtt_ms` and per-pair ping matrix remain idle measurements,
+taken before traffic. They must not be described as latency under congestion.
+Traffic measurements additionally contain `loaded_rtt`, sampled for that flow's
+source/destination with one ICMP ping subprocess at a time while iperf runs.
+Probes bind to the data interface, use a one-packet/one-second ping deadline and
+at most a two-second subprocess timeout, and pause 200 ms between attempts.
+The sampler is stopped and joined on success or traffic failure. The iperf UDP
+command, single-flow scenario schema, jitter/throughput/loss calculations, and
+runtime acceptance thresholds are unchanged. Counter reads happen at iperf
+completion before waiting for a final probe to finish.
+
+Only probes wholly inside a conservatively verified sender-test interval count
+toward loaded RTT. Let `T` be the enclosing command's monotonic elapsed time and
+`D` the client sender summary's reported duration, in seconds. The sender test
+must start at an offset between `0` and `T-D`, so `[T-D, D]` is inside every
+possible sender interval. Both endpoints are further inset by 50 ms. This avoids
+assuming that process launch equals traffic start or that process exit equals
+traffic end. The sender summary must identify `sender: true`, positive bytes,
+zero start, and valid consistent duration/end times. Receiver duration is not
+substituted. The legacy client `end.sum` sender format is also supported.
+
+`traffic.loaded_rtt` records:
+
+- `mean_ms`, `min_ms`, and `max_ms`: RTT in milliseconds for eligible successful
+  probes only; `null` when no trustworthy measurement is available.
+- `status`: `measured`, `partial` (some eligible probes failed), or `unavailable`;
+  `reason` describes failures or inability to establish overlap.
+- `window`: the verified interval relative to iperf command launch, its sender
+  duration, and the method used; `null` if timing cannot be verified.
+- `samples_used` and `samples_failed`: successful and failed eligible probes.
+- `samples`: raw ping output/errors/return codes, RTT, monotonic start/end offsets
+  in seconds, and an `included` flag for every attempt. Setup/reporting probes
+  are retained for audit but excluded from the statistics.
+
+Missing/malformed sender timing, excessive setup/report overhead, or no complete
+eligible replies leaves loaded RTT unknown without discarding valid UDP metrics.
+In particular, short flows may yield no usable samples. RTT covers both forward
+and return paths; it is not one-way delay or application latency. A successful
+reply mean must be interpreted alongside probe failures and UDP loss. The probes
+also add a small amount of traffic. Live validation, longer/repeated windows,
+and characterization of probe/sidecar/counter overhead are still needed before
+claiming latency improvements.
+
+Run focused offline coverage with mocked traffic and ping subprocesses:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -p test_loaded_rtt.py -v
+```
+
+These tests establish timing/filtering and failure-handling behavior, not measured
+Abilene performance. Loaded RTT is preserved in the existing healthy, impaired,
+and candidate measurement files and observations; it is reporting only and is
+not used by `acceptable()`.
 
 Use `--attempts 1` for a single-shot verified baseline and `--attempts 5` for the
 iterative verified loop, holding all other settings constant. This is not an
