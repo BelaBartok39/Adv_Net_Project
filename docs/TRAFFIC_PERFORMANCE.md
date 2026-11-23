@@ -141,6 +141,113 @@ outputs, raw measurements, versions, checks, and cleanup results. Preserve these
 ignored artifacts separately for the research report. Both live-test hosts and
 their private network are removed, leaving preexisting containers alone.
 
+## Dynamic workload definitions (offline only)
+
+`advnet.dynamic_workload` defines changing demand independently of the controller.
+This phase provides configuration validation and schedule resolution only. It
+does not execute events or provide a dynamic traffic CLI. The existing static
+traffic collectors, metrics, comparison reports, bounded campaigns, deployment
+thresholds, and frozen benchmark are unchanged.
+
+The definitions reuse `Contract`, `MAX_CONCURRENT_FLOWS`, and
+`validate_flow_endpoints`. Later execution can reuse the `Lab` host inventory,
+`udp_metrics`, `loaded_rtt`, `Lab.counters`, and `Lab._link_utilization`, plus the
+owned-client pattern in `run_concurrent_traffic`. `Lab.traffic` and
+`run_concurrent_traffic` finish a bounded measurement before returning; dynamic
+arrivals and rate changes will need the separate scheduler in the next phase.
+The existing `compare_performance`, `compare_trial_artifacts`, `Trial`, and
+bounded experiment runner retain their current roles.
+
+A `DynamicWorkload` has `duration_seconds`, optional integer `seed`, schema
+version `"1"`, and a nonempty `flows` list. Each flow has a unique `flow_id`,
+`source`, `destination`, `destination_port` (default 5201), `offered_mbps`,
+`start_seconds`, `stop_seconds`, and optional `rate_changes` and `bursts` lists.
+Endpoints use the existing manifest router keys (`sea`, `sva`, etc.) to identify
+their attached hosts. All times, including rate changes and bursts, are absolute
+seconds relative to experiment start; fractional seconds are preserved.
+
+For example, this configuration describes an arrival, a sustained rate change,
+a temporary burst, and a departure:
+
+```python
+import json
+from pathlib import Path
+from advnet.dynamic_workload import ResolvedWorkload, resolve_workload
+
+manifest = json.loads(Path('topologies/abilene.json').read_text())
+definition = {
+    'duration_seconds': 30,
+    'flows': [{
+        'flow_id': 'sea-sva', 'source': 'sea', 'destination': 'sva',
+        'offered_mbps': 5, 'start_seconds': 2, 'stop_seconds': 25,
+        'rate_changes': [{'at_seconds': 8, 'offered_mbps': 10}],
+        'bursts': [{'start_seconds': 12, 'stop_seconds': 16, 'offered_mbps': 40}],
+    }],
+}
+resolved = resolve_workload(definition, manifest)
+Path('/tmp/resolved-workload.json').write_text(resolved.model_dump_json(indent=2))
+loaded = ResolvedWorkload.model_validate_json(
+    Path('/tmp/resolved-workload.json').read_text()).validate_inventory(manifest)
+assert loaded.events == resolved.events
+```
+
+This produces intended events at 2 (start at 5 Mbps), 8 (10 Mbps), 12 (40 Mbps),
+16 (restore 10 Mbps), and 25 seconds (stop). `offered_mbps` always means requested
+sender load; it is never a claim about measured receiver throughput. Neither
+the definition nor the resolved schedule accepts measurement or execution-result
+fields. The resolved artifact retains flow definitions, the seed, and explicit
+events with contiguous `sequence` numbers; inconsistent events are rejected
+when parsed. Schema parsing checks structure and timeline semantics; use
+`resolve_workload` for definitions and `validate_inventory(manifest)` after
+loading resolved artifacts to check hosts against the intended inventory.
+
+Lifetimes are half-open `[start_seconds, stop_seconds)`. At most four flows may
+be active, reusing `MAX_CONCURRENT_FLOWS`; the total number of sequential flows
+can exceed four. Overlapping flows cannot share a physical destination host/port.
+At equal timestamps, departures precede rate changes, which precede arrivals;
+input flow order breaks ties within each category. A port can be reused exactly
+at a scheduled departure. These are intended lifetimes; future execution must
+confirm cleanup before reuse. Alternate ports still require separate receivers,
+whose existence cannot be checked offline.
+
+All offered rates must be finite and in `(0, 1000]` Mbps, matching the existing
+traffic profiles. Experiment duration is positive and at most 86400 seconds,
+matching the existing deadline ceiling. Flow start must precede stop and lie
+within that duration. Rate changes must be strictly ordered inside the flow
+lifetime. Bursts must be ordered, non-overlapping, and inside the flow lifetime;
+touching bursts are allowed. A burst's absolute offered rate must exceed the
+underlying sustained rate throughout its window. Sustained changes during a
+burst update the rate restored at its end. At coincident boundaries only the
+effective rate is emitted, and no-op updates are omitted; the original changes
+remain in the saved definition. A burst can begin at flow start or end at flow
+stop without creating redundant events.
+
+`generate_workload(specification, manifest)` accepts a `WorkloadGenerator` or
+dictionary with `duration_seconds`, optional `seed`, `hosts`, `flow_count`,
+`arrival_interval_seconds`, `flow_duration_seconds`, `min_offered_mbps`,
+`max_offered_mbps`, and optional `destination_port`. It creates arrivals at
+`i * arrival_interval_seconds`, starting at zero, with the specified lifetime.
+For each arrival it samples a distinct source/destination pair from available
+receiver endpoints, then a uniform offered rate between the inclusive bounds.
+Candidates are sorted and randomness uses a local `random.Random(seed)`;
+global RNG state and manifest insertion order do not affect the result. Generated
+flows can subsequently include explicit rate changes and bursts. Invalid bounds,
+unknown hosts, insufficient free receivers, more than four active clients, or
+an arrival whose stop exceeds the duration raise errors without moving arrivals
+or reducing demand. The generator does not retry random draws to hide conflicts.
+
+Save the explicit resolved schedule for exact replay, including when no seed is
+supplied. Seeded regeneration assumes the same inputs and Python RNG behavior;
+a saved schedule requires no random draws. This phase's JSON round trips validate
+intended schedules only. Runtime timing, process cleanup, receiver availability,
+and live network performance require later scheduler and integration work.
+
+Run the model tests without Docker, Batfish, clocks, or API calls:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -p test_dynamic_workload.py -v
+```
+
 ## Limits and future work
 
 Linux-only live measurements verify collection and orchestration; they do not
