@@ -245,3 +245,119 @@ or rollback. Full live Diamond controller support still requires a complete
 Diamond runtime manifest and adapting `advnet/lab.py` to the two-host layout,
 followed by separately authorized live-network tests. No baseline router files,
 Abilene files, or `advnet/lab.py` were changed for this integration test.
+
+## Required and forbidden transit routers
+
+The gate accepts an optional `path_policies` array in `intent.json`. For example:
+
+```json
+{
+  "path_policies": [
+    {
+      "source": "host-a",
+      "destination": "host-b",
+      "ip_protocol": "ICMP",
+      "required_transit_routers": ["r1", "r2", "r4"],
+      "forbidden_transit_routers": ["r3"]
+    }
+  ]
+}
+```
+
+These fields supplement the snapshot's existing lab, routers, and hosts fields.
+All five policy fields are mandatory; unknown fields reject verification. Source
+and destination must be distinct hosts in the manifest. `ip_protocol` is one of
+the uppercase names `ICMP`, `TCP`, or `UDP`; unsupported protocols reject. Both
+router fields must be arrays of distinct known router names, without overlap,
+and at least one must be nonempty. Required routers are an **unordered set** of
+waypoints: each must occur between the source and destination host hops.
+Forbidden routers must never occur there. This does not enforce waypoint order
+or prohibit additional routers unless they are explicitly forbidden. A policy
+is directional; add another policy to constrain the reverse flow. All policies
+matching a flow must pass.
+
+Omitting `path_policies` or specifying `[]` preserves the existing all-host ICMP
+checks and result format, including the original Abilene manifest. Policies add
+constraints; they cannot replace connectivity checks. `trial.snapshot()` already
+copies the entire intent, so no controller changes are required.
+
+The gate inspects actual Batfish traceroute hop sequences, with filters enabled.
+It reuses the existing ICMP queries and adds queries for declared TCP/UDP flows.
+Every trace must be ACCEPTED at the intended destination through modeled
+routers, and **every** accepted path must satisfy each matching policy. One
+violating ECMP alternative rejects the candidate. Diagnostics name the source,
+destination, protocol, full violating path, policy index and definition, missing
+required routers, and observed forbidden routers. `path_checks` records each
+inspected policy/path pair in JSON, including successful checks.
+
+These checks concern Batfish's concrete protocol flow and all its modeled
+forwarding alternatives. TCP/UDP ports and other packet fields use Batfish's
+traceroute defaults; this is not an exhaustive transport-header or stateful
+firewall verification. Missing flows, non-ACCEPTED dispositions, missing host or
+router hops, duplicate flows, and incomplete trace sets all reject. The query
+requests up to 10,000 traces and rejects whenever `TraceCount` differs from the
+number returned. Malformed policies, parsing/init problems, unsupported queries,
+and service errors also reject; such errors do not count as a successful
+negative routing test.
+
+Build reproducible snapshots in new directories:
+
+```bash
+python3 scripts/build_diamond_snapshot.py --path-policy --output runs/path-healthy
+python3 scripts/build_diamond_snapshot.py --path-policy --via-r3 --output runs/path-violating
+python3 scripts/build_diamond_snapshot.py --path-policy --host-a-down --output runs/path-broken
+.venv/bin/python -m advnet.batfish_gate runs/path-healthy
+.venv/bin/python -m advnet.batfish_gate runs/path-violating
+.venv/bin/python -m advnet.batfish_gate runs/path-broken
+```
+
+The healthy route is `host-a -> r1 -> r2 -> r4 -> host-b`. `--via-r3`
+changes only the generated R1 and R4 Ethernet1 OSPF costs from 10 to 1000.
+The R2 route then costs 1010, versus 200 via R3, in both directions between
+R1 and R4. Host interfaces remain enabled and their routes remain advertised.
+The alternate route is `host-a -> r1 -> r3 -> r4 -> host-b`: connectivity
+passes, while the explicit policy rejects because R2 is missing and R3 occurs.
+`--host-a-down` continues generating the existing connectivity failure. Flags
+do not modify baseline configurations or existing snapshots. `--path-policy`
+alone defaults to `runs/diamond-path-policy`; `--via-r3` defaults to
+`runs/diamond-via-r3`. All builds refuse an existing output directory.
+
+Run the complete suite against an already running Batfish service:
+
+```bash
+RUN_BATFISH_INTEGRATION=1 .venv/bin/python -m unittest discover -s tests -v
+git diff --check
+```
+
+`tests/test_batfish_paths.py` exercises healthy-policy ACCEPT, alternate-policy
+REJECT with every flow still ACCEPTED, alternate routing without policy ACCEPT,
+broken-connectivity REJECT, and unchanged Abilene ACCEPT for all 110 directed
+ICMP pairs. It checks parsing, initialization issues, expected nodes, complete
+trace sets, and exact Diamond routes on the real server. The existing controller
+integration test also runs. Offline tests include ECMP violations, independent
+required/forbidden rules, multiple policies, TCP/UDP query selection, malformed
+policies, missing/truncated traces, manifest preservation, and builder safeguards.
+
+Each real path test creates a new `runs/batfish-path-gate-<timestamp>-<id>/`
+directory with an aggregate `evidence.json` and separate
+`healthy/evidence.json` and `path-violating/evidence.json` files, plus evidence
+for the other cases. Reports include actual gate JSON, snapshot IDs, input
+hashes, parsing/model results, full path sequences/dispositions, and protected
+baseline hashes. Generated snapshots remain alongside the reports. Set
+`ADVNET_TEST_OUTPUT_DIR` to choose a different evidence root; `runs/` and
+`captures/` are ignored by Git. An unavailable real server fails the opted-in
+test. No Containerlab deployment, live router change, or LLM call is involved.
+
+Validated against the real localhost Batfish server on November 22, 2026 UTC:
+all 97 tests passed with integration enabled (95 offline tests and two real
+integration tests). Healthy Diamond accepted via R1/R2/R4; the R1/R3/R4 snapshot
+preserved both ICMP flows but rejected the policy, and accepted without that
+policy. The host-a-down snapshot rejected for NEIGHBOR_UNREACHABLE/NO_ROUTE.
+Unchanged Abilene accepted all 110 directed ICMP flows. All expected input files
+parsed PASSED, initialization issues were empty, and protected baseline files
+were unchanged. Reports are saved locally at
+`runs/batfish-path-gate-20261122T034846Z-2caadb38/evidence.json`, with separate
+`healthy/evidence.json` and `path-violating/evidence.json` beneath that directory.
+The existing controller test also passed, with simulated router writes only.
+TCP/UDP policy selection and ECMP violation handling have offline unit coverage;
+the real path-policy validation above used ICMP.

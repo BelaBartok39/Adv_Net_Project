@@ -387,13 +387,19 @@ includes cleanup. Summarize without excluding failures:
 python3 scripts/summarize-trials.py runs > /tmp/abilene-results.csv
 ```
 
-The initial Batfish gate checks ICMP reachability. It does not yet implement the
-proposal's security-zone ACL/isolation or required-path policies, and the runtime
-checker does not claim application-level security validation. The test suite
-checks code paths using fakes, not live API or network compatibility. The full
-proposal is not experimentally complete until Docker deployment, Batfish parsing,
-configuration replacement/rollback, live OpenAI calls, and repeated scenarios
-have all been exercised and those additional policy/traffic cases are added.
+The Batfish gate checks ICMP reachability and optional explicit required/forbidden
+transit-router policies. The [Abilene path-policy experiment](ABILENE_PATH_POLICY.md)
+uses separate manifests and snapshots to demonstrate a connected OSPF candidate
+rejected for forbidden transit, including the actual Trial controller with
+simulated router operations and real Batfish verification. The normal Abilene
+manifest has no path policies and retains reachability-only behavior.
+
+Security-zone ACL/isolation verification and application-level runtime security
+validation remain unimplemented. Offline tests use fixtures; opted-in integration
+tests query real Batfish. Model verification and simulated controller operations
+do not establish live configuration replacement/rollback, LLM repair quality, or
+congestion performance. The full proposal still requires the remaining policy
+cases and repeated live experiments with their own recorded evidence.
 
 ## Development checks
 
