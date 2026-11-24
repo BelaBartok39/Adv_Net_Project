@@ -74,6 +74,7 @@ class ScheduleResult(Contract):
     status: Literal['completed', 'failed', 'timed_out', 'cancelled', 'interrupted'] = 'completed'
     duration_seconds: float
     timeout_seconds: float
+    started_monotonic_seconds: float | None = None
     events: list[EventExecution]
     flow_exits: list[FlowExitRecord] = Field(default_factory=list)
     error: ExecutionError | None = None
@@ -143,6 +144,7 @@ def run_schedule(schedule, manifest, backend: TrafficBackend, *, clock: Clock | 
     active = set()
     flows = {flow.flow_id: flow for flow in resolved.flows}
     report = ScheduleResult(duration_seconds=resolved.duration_seconds, timeout_seconds=budget,
+                            started_monotonic_seconds=origin,
                             events=[EventExecution(intended=event) for event in resolved.events])
     interruption = None
     context_flow = None

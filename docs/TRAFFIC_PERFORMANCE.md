@@ -257,7 +257,7 @@ manifest, and an injected `TrafficBackend`. It reparses the schedule (including
 model instances) and validates inventory before touching the backend. It uses
 `time.monotonic()` through an injectable `Clock` with `monotonic()` and
 `sleep(seconds)` methods. Unit tests advance fake time without real sleeping.
-There is no Docker or iperf3 backend in this phase, and the existing traffic CLI
+The optional Docker/iperf3 backend is described below. The existing traffic CLI
 does not execute dynamic schedules yet.
 
 Backend methods have the following contract:
@@ -281,8 +281,8 @@ subprocess operations rather than relying on the scheduler as a hard watchdog.
 
 The backend should be dedicated to one run and should retain ownership records
 until cleanup is confirmed. A failed start may already have allocated resources;
-cleanup cannot depend only on successful starts. Receiver/process ownership and
-rate-change restart gaps remain requirements for the later iperf3 integration.
+cleanup cannot depend only on successful starts. The UDP integration below
+tracks client ownership and rate-change restart intervals.
 
 Given `resolved` and `manifest` from the example above, and a backend implementing
 that contract:
@@ -305,8 +305,9 @@ except ScheduleInterrupted as interrupted:
 
 `ScheduleResult` is separate from workload configuration and contains intended
 events, actual attempt times, completion times, lateness, per-event status and
-errors, unexpected client exits, and cleanup results. All timestamps are seconds
-relative to the same experiment start. These times describe backend control
+errors, unexpected client exits, and cleanup results. It also exposes the
+`started_monotonic_seconds` origin so transport records can use the same timeline.
+Other timestamps are seconds relative to that experiment start. They describe backend control
 calls; they do not establish when packets actually started or stopped. Missing
 timing after clock failure remains `None`. Lateness is nonnegative, with tiny
 floating-point differences at timestamp boundaries clamped to zero. Absolute
@@ -343,6 +344,108 @@ Run both dynamic model and scheduler tests entirely offline:
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -p 'test_dynamic*.py' -v
+```
+
+## Dynamic UDP transport (explicit opt-in, Phase 3)
+
+`advnet.dynamic_udp.run_dynamic_udp(resolved, manifest)` connects the scheduler
+to the existing host inventory and `advnet-host:0.1` image. Traffic is disabled
+by default: the caller must explicitly supply `allow_live=True`. There is no
+dynamic CLI yet. Phase 4 will add the CLI, workload profiles, saved experiment
+evidence, and Nick's optional live-test procedure. No live test was run to
+validate this transport implementation.
+
+The wrapper uses the same `runs/.abilene.lock` as `advnet.experiment`, excluding
+cooperating static collectors and repair experiments. Run from the repository
+root so existing experiment commands use that same lock. `lock_path` is
+injectable for isolated unit tests; changing it for simultaneous runs against
+one lab would bypass this protection. The low-level `DynamicUdpBackend` requires
+its caller to provide equivalent exclusion; normal callers should use the
+wrapper. A backend instance belongs to one run and is closed by cleanup.
+
+Clients use the existing source host's network namespace and data IP, receiver
+data IP, 1200-byte UDP datagrams, requested Mbps, JSON output, and
+`--get-server-output`. Each client sidecar is limited to 128 MiB and 32 PIDs,
+with all Linux capabilities dropped, matching existing concurrent-client limits.
+The backend independently enforces at most four reserved clients and rejects
+duplicate destination host/port assignments. It refuses automatic image pulls.
+Detached `docker start` returns after launch; bounded state inspections monitor
+running clients, rather than waiting for their full lifetimes. Interval reports
+are disabled (`-i 0`); receiver summaries are collected at segment completion.
+
+Receivers must already exist on their chosen ports. Using `Lab.execute`, the
+backend performs read-only `ss` checks for a listener on the data address (or
+an IPv4 wildcard) and for established control connections. Missing or busy
+receivers cause an error before client creation. After its own client stops,
+the backend waits within the operation budget for the receiver to become free.
+It never launches, kills, or replaces a receiver. Alternate ports require
+separate receivers that Nick has already prepared. Noncooperating external
+clients can still race an availability check; an iperf3 busy/error response
+aborts the run, without signalling those clients or their server.
+
+Rate changes and both boundaries of temporary bursts **restart the owned client**.
+The old client receives SIGINT, its stopped state is confirmed, its output is
+collected, and its container is removed. A new owned container then starts with
+the new effective offered rate. Each restart uses the same overall operation
+budget; steps do not reset the timeout. Slow Docker calls or receiver release
+can therefore delay later scheduled events, whose intended times stay unchanged.
+
+Each segment records launch/stop request and return/confirmation times on the
+scheduler's experiment-relative timeline, requested rate, container identity,
+exit code, raw output, receiver metrics, errors, and removal status. Each rate
+change records the old/new segment references and `restart_control_seconds`.
+`minimum_no_client_seconds` records the interval from confirmed old-client exit
+to the next launch request, when no runner client for that flow could be active.
+It is a lower bound on the restart gap, not a measurement of packet arrivals.
+`traffic_gap_seconds` remains `None` with `gap_status="unverified"`; failed
+restarts use `"incomplete"`. Startup, teardown, and in-flight packets prevent a
+claim of perfectly continuous traffic or an exact packet-level gap.
+
+Every client also has a finite iperf3 safety duration: the ceiling of its
+remaining flow lifetime relative to the first launch attempt, plus one second,
+with a one-second minimum. Scheduled stops and rate-change restarts normally
+terminate it earlier. Connection setup is limited to one second. These bounds
+limit a client's sending time if the scheduler disappears; they do not replace
+owned-resource cleanup or establish exact scheduled packet timing.
+
+The stop procedure uses a custom SIGINT sent to the container's main process,
+as documented by [Docker](https://docs.docker.com/reference/cli/docker/container/kill/).
+The client runs directly as that process, without a shell wrapper. iperf3's
+[signal handler](https://github.com/esnet/iperf/blob/master/src/iperf_api.c)
+attempts final reporting and control-connection termination. The installed
+image's iperf3 version and actual receiver release still require live validation.
+
+Receiver statistics reuse `udp_metrics`; offered rates remain separate from
+received Mbps. Interrupted or force-removed segments can lack receiver output.
+Missing/invalid statistics remain `None` with explicit unavailable status and
+`measurement_error`; sender rates never fill them. Existing missing/invalid
+jitter handling is preserved. A completed scheduler result means its control
+operations finished; it does not establish successful traffic measurement or
+any network performance improvement. Raw output is retained for interpretation.
+
+Ownership is registered before creation. A unique run label and the full immutable
+container ID are verified before starting, signalling, or removing a client.
+Cleanup includes failed/partial starts and attempts remaining clients after
+individual errors. A stalled graceful stop falls back to force-removing only
+the verified owned container, within a share of the remaining cleanup budget.
+Ownership mismatches and daemon failures remain explicit cleanup errors. A
+timed-out create whose existence cannot be confirmed is reported as unconfirmed
+cleanup, since a daemon request may complete after the local CLI times out.
+Cleanup can be retried; it never uses process-name kills or container pruning.
+
+The returned dictionary separates `scheduler` results, `segments`, and
+`rate_changes`. On Ctrl+C or `SystemExit`, `.traffic_result` on the propagated
+exception retains partial transport evidence after cleanup. Phase 3 returns
+these records in memory; durable saving and hashing belong to Phase 4. It
+does not collect new router counters, alter shaping/capacities/OSPF, invoke
+inference or Batfish, or change deployment acceptance thresholds.
+
+All new transport tests substitute subprocesses and time. To run them safely:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -p test_dynamic_udp.py -v
+RUN_BATFISH_INTEGRATION=0 RUN_TRAFFIC_INTEGRATION=0 \
+  .venv/bin/python -m unittest discover -s tests
 ```
 
 ## Limits and future work
