@@ -115,6 +115,27 @@ class DynamicSchedulerTests(unittest.TestCase):
         self.assertTrue(result.cleanup_succeeded)
         self.assertFalse(self.backend.owned)
 
+    def test_on_start_publishes_origin_before_backend_calls_and_failure_triggers_cleanup(self):
+        observed = []
+        def started(origin):
+            self.assertFalse(self.backend.calls)
+            observed.append(origin)
+        result = self.run_schedule(on_start=started)
+        self.assertEqual(observed, [100])
+        self.assertEqual(result.status, 'completed')
+        self.setUp()
+        def failed(origin):
+            raise RuntimeError('Cannot publish timeline')
+        result = self.run_schedule(on_start=failed)
+        self.assertEqual(result.status, 'failed')
+        self.assertTrue(result.cleanup_succeeded)
+        self.assertTrue(all(event.status == 'skipped' for event in result.events))
+        self.assertEqual([call[0] for call in self.backend.calls], ['cleanup'])
+        self.setUp()
+        with self.assertRaises(ValueError):
+            self.run_schedule(on_start=True)
+        self.assertFalse(self.backend.calls)
+
     def test_second_arrival_does_not_wait_for_first_flow_to_finish(self):
         result = self.run_schedule(schedule([flow(), flow('b', destination='nyc',
                                                           start_seconds=1, stop_seconds=4)]))

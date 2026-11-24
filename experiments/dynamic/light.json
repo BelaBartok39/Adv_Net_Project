@@ -1,0 +1,7 @@
+{
+  "duration_seconds": 60,
+  "flows": [
+    {"flow_id": "light-sea-sva", "source": "sea", "destination": "sva", "offered_mbps": 1, "start_seconds": 0, "stop_seconds": 50},
+    {"flow_id": "light-den-nyc", "source": "den", "destination": "nyc", "offered_mbps": 2, "start_seconds": 20, "stop_seconds": 55}
+  ]
+}

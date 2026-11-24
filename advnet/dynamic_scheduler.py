@@ -108,7 +108,7 @@ def _error(error, flow_id=None):
 
 def run_schedule(schedule, manifest, backend: TrafficBackend, *, clock: Clock | None = None,
                  cancelled=None, timeout_seconds=None, operation_timeout_seconds=5,
-                 cleanup_timeout_seconds=10, poll_interval_seconds=0.1):
+                 cleanup_timeout_seconds=10, poll_interval_seconds=0.1, on_start=None):
     """Run one validated schedule, returning timings and partial failure evidence.
 
     Timing origin is one monotonic reading taken before the first backend call.
@@ -125,6 +125,8 @@ def run_schedule(schedule, manifest, backend: TrafficBackend, *, clock: Clock | 
     raises ScheduleInterrupted with that result after cleanup; SystemExit is
     re-raised after cleanup with schedule_result attached. Invalid inputs fail
     before touching the backend.
+    on_start(origin) optionally publishes the shared monotonic origin before
+    any flow starts; callback failures abort dispatch and still trigger cleanup.
     """
     value = schedule.model_dump() if isinstance(schedule, ResolvedWorkload) else schedule
     resolved = ResolvedWorkload.model_validate(value).validate_inventory(manifest)
@@ -136,6 +138,8 @@ def run_schedule(schedule, manifest, backend: TrafficBackend, *, clock: Clock | 
     clock = SystemClock() if clock is None else clock
     if cancelled is not None and not callable(cancelled):
         raise ValueError('cancelled must be a callable, such as threading.Event.is_set')
+    if on_start is not None and not callable(on_start):
+        raise ValueError('on_start must be callable')
     origin = clock.monotonic()
     if type(origin) not in (int, float) or not math.isfinite(origin):
         raise ValueError('Clock must return finite monotonic seconds')
@@ -211,6 +215,8 @@ def run_schedule(schedule, manifest, backend: TrafficBackend, *, clock: Clock | 
                 clock.sleep(delay)
 
     try:
+        if on_start is not None:
+            on_start(origin)
         for record in report.events:
             event = record.intended
             wait_until(event.at_seconds)

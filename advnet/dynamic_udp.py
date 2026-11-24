@@ -159,6 +159,7 @@ class DynamicUdpBackend:
                    'destination_port': flow.destination_port, 'offered_mbps': rate,
                    'container_name': f'advnet-dynamic-{self.token}-{index}', 'container_id': None,
                    'create_uncertain': False, 'removed': False, 'status': 'preparing',
+                   'created_monotonic_seconds': None, 'removed_monotonic_seconds': None,
                    'start_requested_monotonic_seconds': None, 'start_returned_monotonic_seconds': None,
                    'stop_requested_monotonic_seconds': None, 'stop_confirmed_monotonic_seconds': None,
                    'returncode': None, 'raw_iperf_json': None, 'stderr': None,
@@ -189,6 +190,7 @@ class DynamicUdpBackend:
             segment['container_id'] = identifier
             self._inspect(segment, budget)
             segment['create_uncertain'] = False
+            segment['created_monotonic_seconds'] = self.clock.monotonic()
             segment['start_requested_monotonic_seconds'] = self.clock.monotonic()
             self._run(['start', identifier], budget)
             segment['start_returned_monotonic_seconds'] = self.clock.monotonic()
@@ -244,6 +246,7 @@ class DynamicUdpBackend:
             if removed.returncode and not self._missing(removed):
                 raise RuntimeError('Unable to remove owned client: '+removed.stderr[-1500:])
         segment['removed'] = True
+        segment['removed_monotonic_seconds'] = self.clock.monotonic()
         self.active.pop(segment['flow_id'], None)
 
     def _finish(self, segment, budget, *, scheduled):

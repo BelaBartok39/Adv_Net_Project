@@ -145,10 +145,10 @@ their private network are removed, leaving preexisting containers alone.
 
 `advnet.dynamic_workload` defines changing demand independently of the controller.
 These models provide configuration validation and schedule resolution. The
-offline scheduler is described below; a dynamic traffic CLI is still future
-work. Existing static traffic collectors, metrics, comparison reports, bounded
-campaigns, deployment
-thresholds, and frozen benchmark are unchanged.
+offline scheduler is described below; the [dynamic CLI and replay guide](DYNAMIC_TRAFFIC.md)
+covers optional execution and saved evidence. Existing static traffic collectors,
+metrics, comparison reports, bounded campaigns, deployment thresholds, and the
+frozen benchmark are unchanged.
 
 The definitions reuse `Contract`, `MAX_CONCURRENT_FLOWS`, and
 `validate_flow_endpoints`. Later execution can reuse the `Lab` host inventory,
@@ -257,8 +257,8 @@ manifest, and an injected `TrafficBackend`. It reparses the schedule (including
 model instances) and validates inventory before touching the backend. It uses
 `time.monotonic()` through an injectable `Clock` with `monotonic()` and
 `sleep(seconds)` methods. Unit tests advance fake time without real sleeping.
-The optional Docker/iperf3 backend is described below. The existing traffic CLI
-does not execute dynamic schedules yet.
+The optional Docker/iperf3 backend is described below. Dynamic schedules use the
+[separate dynamic CLI](DYNAMIC_TRAFFIC.md); the existing static traffic CLI retains its current behavior.
 
 Backend methods have the following contract:
 
@@ -276,7 +276,7 @@ collection. It polls active clients while waiting for the next event, so one
 flow can remain active when another arrives. Control calls execute synchronously
 in canonical schedule order; their latency can delay later calls. The scheduler
 records this delay and detects overruns after calls return. It cannot forcibly
-interrupt a backend that ignores its timeout. A future transport must bound its
+interrupt a backend that ignores its timeout. Transport implementations must bound their
 subprocess operations rather than relying on the scheduler as a hard watchdog.
 
 The backend should be dedicated to one run and should retain ownership records
@@ -350,10 +350,10 @@ Run both dynamic model and scheduler tests entirely offline:
 
 `advnet.dynamic_udp.run_dynamic_udp(resolved, manifest)` connects the scheduler
 to the existing host inventory and `advnet-host:0.1` image. Traffic is disabled
-by default: the caller must explicitly supply `allow_live=True`. There is no
-dynamic CLI yet. Phase 4 will add the CLI, workload profiles, saved experiment
-evidence, and Nick's optional live-test procedure. No live test was run to
-validate this transport implementation.
+by default: the caller must explicitly supply `allow_live=True`. The
+[CLI guide](DYNAMIC_TRAFFIC.md) covers workload profiles, saved evidence,
+replay, and Nick's optional live-test procedure. No live test was run to validate
+this transport implementation.
 
 The wrapper uses the same `runs/.abilene.lock` as `advnet.experiment`, excluding
 cooperating static collectors and repair experiments. Run from the repository
@@ -435,8 +435,8 @@ Cleanup can be retried; it never uses process-name kills or container pruning.
 
 The returned dictionary separates `scheduler` results, `segments`, and
 `rate_changes`. On Ctrl+C or `SystemExit`, `.traffic_result` on the propagated
-exception retains partial transport evidence after cleanup. Phase 3 returns
-these records in memory; durable saving and hashing belong to Phase 4. It
+exception retains partial transport evidence after cleanup. This library returns
+records in memory; the dynamic CLI saves and hashes them. It
 does not collect new router counters, alter shaping/capacities/OSPF, invoke
 inference or Batfish, or change deployment acceptance thresholds.
 
