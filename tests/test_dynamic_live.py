@@ -92,7 +92,7 @@ class LiveDynamicTrafficTests(unittest.TestCase):
                            'stdout': process.stdout, 'stderr': process.stderr})
             (directory/'cleanup-checks.json').write_text(json.dumps(checks, indent=2)+'\n')
             self.assertNotEqual(process.returncode, 0)
-            self.assertIn('No such', process.stderr)
+            self.assertIn('no such', process.stderr)
 
 
 if __name__ == '__main__':
