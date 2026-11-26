@@ -1,0 +1,9 @@
+{
+  "duration_seconds": 90,
+  "flows": [
+    {"flow_id": "moderate-sea-sva", "source": "sea", "destination": "sva", "offered_mbps": 10, "start_seconds": 0, "stop_seconds": 80,
+     "rate_changes": [{"at_seconds": 30, "offered_mbps": 20}]},
+    {"flow_id": "moderate-den-nyc", "source": "den", "destination": "nyc", "offered_mbps": 15, "start_seconds": 15, "stop_seconds": 75},
+    {"flow_id": "moderate-lax-hou", "source": "lax", "destination": "hou", "offered_mbps": 10, "start_seconds": 30, "stop_seconds": 85}
+  ]
+}

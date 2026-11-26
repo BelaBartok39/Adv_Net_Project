@@ -1,0 +1,8 @@
+{
+  "duration_seconds": 75,
+  "flows": [
+    {"flow_id": "burst-sea-sva", "source": "sea", "destination": "sva", "offered_mbps": 5, "start_seconds": 0, "stop_seconds": 65,
+     "bursts": [{"start_seconds": 20, "stop_seconds": 35, "offered_mbps": 80}]},
+    {"flow_id": "background-den-nyc", "source": "den", "destination": "nyc", "offered_mbps": 8, "start_seconds": 10, "stop_seconds": 70}
+  ]
+}

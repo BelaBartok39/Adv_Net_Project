@@ -1,0 +1,8 @@
+{
+  "duration_seconds": 90,
+  "flows": [
+    {"flow_id": "sustained-sea-sva", "source": "sea", "destination": "sva", "offered_mbps": 5, "start_seconds": 0, "stop_seconds": 85,
+     "rate_changes": [{"at_seconds": 25, "offered_mbps": 30}, {"at_seconds": 55, "offered_mbps": 15}]},
+    {"flow_id": "background-den-nyc", "source": "den", "destination": "nyc", "offered_mbps": 10, "start_seconds": 15, "stop_seconds": 80}
+  ]
+}

@@ -196,4 +196,5 @@ experiments remain separate work.
 - [Abilene setup, scenarios, and measured results](docs/ABILENE_BASELINE.md)
 - [Visualizer and replay](docs/VISUALIZER.md)
 - [Decision pipeline and partner interfaces](docs/DECISION_PIPELINE.md)
+- [Dynamic traffic plans, replay, evidence, and optional Abilene tests](docs/DYNAMIC_TRAFFIC.md)
 - [Earlier Diamond lab](labs/DIAMOND.md)

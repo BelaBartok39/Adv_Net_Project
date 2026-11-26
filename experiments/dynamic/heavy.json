@@ -1,0 +1,9 @@
+{
+  "duration_seconds": 90,
+  "flows": [
+    {"flow_id": "heavy-sea-sva", "source": "sea", "destination": "sva", "offered_mbps": 80, "start_seconds": 0, "stop_seconds": 80},
+    {"flow_id": "heavy-lax-hou", "source": "lax", "destination": "hou", "offered_mbps": 70, "start_seconds": 10, "stop_seconds": 85},
+    {"flow_id": "heavy-den-nyc", "source": "den", "destination": "nyc", "offered_mbps": 60, "start_seconds": 20, "stop_seconds": 88},
+    {"flow_id": "heavy-chi-atl", "source": "chi", "destination": "atl", "offered_mbps": 50, "start_seconds": 30, "stop_seconds": 90}
+  ]
+}

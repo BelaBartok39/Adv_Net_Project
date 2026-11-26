@@ -1,0 +1,10 @@
+{
+  "duration_seconds": 90,
+  "seed": 7311,
+  "hosts": ["sea", "sva", "den", "nyc"],
+  "flow_count": 6,
+  "arrival_interval_seconds": 10,
+  "flow_duration_seconds": 25,
+  "min_offered_mbps": 2,
+  "max_offered_mbps": 20
+}
