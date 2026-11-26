@@ -6,10 +6,11 @@ deployment. `deployment_authorized` is always `false`, including at proposal and
 reservation stages. There is no Docker, router, Jev, LLM, Batfish, lab lock, or
 experiment-runner operation in this module.
 
-This feature is standalone. No persistent controller or continuous experiment
-runner is implemented. All observations and outcomes in its tests and simulation
-are **synthetic**; they demonstrate policy logic, not network optimization,
-throughput gains, repair effectiveness, or live safety validation.
+The policy is standalone and is also used by the
+[persistent controller](PERSISTENT_CONTROLLER.md). Observations and outcomes in
+its unit tests and simulation are **synthetic**; they demonstrate policy logic,
+not network optimization, throughput gains, repair effectiveness, or live safety
+validation.
 
 ## Contracts and evidence
 
@@ -20,9 +21,9 @@ state and snapshots are copied to protect internal nested collections.
 
 | Contract | Meaning |
 | --- | --- |
-| `NetworkObservation` | Observation correlation ID, aware timestamp, directed link samples, reachability and OSPF samples. Every inner sample retains its own timestamp. |
+| `NetworkObservation` | Observation correlation ID, aware timestamp, directed link samples, reachability and OSPF samples, and an optional performance health sample. Every inner sample retains its own timestamp. |
 | `LinkMeasurement` | Optional measured Mbps, effective capacity in Mbps, utilization as a ratio, and provenance strings. No nominal speed or offered-demand fallback. |
-| `HealthMeasurement` | `healthy=True/False/None` over the caller's explicit required hosts or adjacencies, sample timestamp and evidence. Unknown is not healthy. |
+| `HealthMeasurement` | `healthy=True/False/None` over the caller's explicit required hosts, adjacencies or performance reference, sample timestamp and evidence. Unknown is not healthy. |
 | `CandidateAction` | Canonical action fingerprint, stable state-domain scope, before/after state fingerprints. Contains no executable router commands. |
 | `ConfigurationChange` | Actual observed before/after states with timestamp and readback evidence; includes external changes and rollbacks. |
 | `InterventionOutcome` | `success`, `rejected`, `failed`, `rolled_back` or `rollback_unconfirmed`, explicit state confirmation and supporting evidence. |
@@ -58,6 +59,7 @@ criteria. Threshold equality is inclusive. A deadline is expired at equality.
 | Congestion high / clear ratios | 0.85 / 0.65 |
 | Congestion consecutive samples AND minimum duration | 3 AND 20 seconds |
 | Repair failure samples AND minimum duration, per health signal | 2 AND 5 seconds |
+| Performance failure samples AND minimum duration | 3 AND 20 seconds |
 | Fixed lifetime of an inference request (`opportunity_seconds`) | 60 seconds |
 | Minimum time between new requests of the same kind (`min_request_interval`) | 5 seconds |
 | Backoff after closing an optimization / repair request (`optimization_retry_seconds`, `repair_retry_seconds`) | 30 / 30 seconds |
@@ -88,6 +90,17 @@ provided fresh evidence still meets the failure thresholds. This
 prevents a discarded or suppressed candidate from permanently latching out a
 legitimate repair. A successful recovery also rearms repair immediately after
 the configured recovery count and duration.
+
+An optional `performance` health signal uses its own three-sample, 20-second
+failure streak and produces `performance_failure` repair opportunities. The live
+collector supplies this signal from matching-demand baseline RTT, per-flow
+delivery and loss tolerances, and fingerprints its reference scope so a demand
+or capacity change cannot combine failure votes. Unknown performance blocks
+optimization when supplied; callers that omit this optional signal retain the
+original reachability/OSPF policy interface. Performance repairs respect normal
+cooldowns and reversal limits; only reachability failures qualify for the urgent
+cooldown exception. Recovery or a changed performance scope invalidates a pending
+performance evaluation before its result can be deployed.
 
 The supplied links define the scope: omitted inventory cannot be inferred. The
 caller must supply every link it expects the policy to cover. No link samples

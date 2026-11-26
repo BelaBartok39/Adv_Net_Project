@@ -82,6 +82,78 @@ class StabilityPolicyTests(unittest.TestCase):
             self.assertIn('healthy', decision.reasons)
             self.assertFalse(decision.deployment_authorized)
 
+    def performance_observation(self, at, healthy=False, *, scope='demand-A', utilization=0.52):
+        sample = self.observation(at, utilization)
+        return sample.model_copy(update={'performance': HealthMeasurement(
+            observed_at=sample.observed_at, measurement_generation=self.policy.measurement_generation,
+            healthy=healthy, scope_fingerprint=scope, evidence='SYNTHETIC matched performance')})
+
+    def test_performance_requires_three_samples_and_twenty_seconds(self):
+        for at in (0, 5, 10, 19):
+            decision = self.policy.evaluate(self.performance_observation(at))
+            self.assertEqual(decision.recommendation, 'collect_observations')
+        decision = self.policy.evaluate(self.performance_observation(20))
+        self.assertEqual(decision.recommendation, 'permit_repair_evaluation')
+        self.assertIn('performance_failure', decision.reasons)
+        self.assertEqual(self.policy.state.opportunity.signal_keys, ['health:performance'])
+        self.assertEqual(decision.links, [])
+
+    def test_performance_spike_unknown_and_scope_change_break_streak(self):
+        for middle, scope in ((True, 'demand-A'), (None, 'demand-A'), (False, 'demand-B')):
+            with self.subTest(middle=middle, scope=scope):
+                self.policy = StabilityPolicy(clock=self.clock)
+                self.policy.evaluate(self.performance_observation(0))
+                self.policy.evaluate(self.performance_observation(10, middle, scope=scope))
+                decision = self.policy.evaluate(self.performance_observation(20))
+                self.assertNotEqual(decision.recommendation, 'permit_repair_evaluation')
+                self.assertIsNone(self.policy.state.opportunity)
+
+    def test_performance_unknown_blocks_optimization_but_allows_connectivity_repair(self):
+        for at in (0, 10, 20):
+            decision = self.policy.evaluate(self.performance_observation(at, None, utilization=0.95))
+        self.assertEqual(decision.recommendation, 'insufficient_telemetry')
+        for at in (30, 40):
+            sample = self.performance_observation(at, None)
+            sample = sample.model_copy(update={'reachability': sample.reachability.model_copy(update={'healthy': False})})
+            decision = self.policy.evaluate(sample)
+        self.assertEqual(decision.recommendation, 'permit_repair_evaluation')
+        self.assertIn('reachability_failure', decision.reasons)
+
+    def test_performance_does_not_bypass_cooldown_or_reversal_guard(self):
+        self.ready()
+        self.begin()
+        self.change(20, 'A', 'B', origin='controller')
+        self.policy.complete_intervention('i1', outcome('success'))
+        for at in range(30, 81, 10):
+            decision = self.policy.evaluate(self.performance_observation(at))
+            if at < 80:
+                self.assertEqual(decision.recommendation, 'suppress_cooldown')
+        self.assertEqual(decision.recommendation, 'permit_repair_evaluation')
+        assessment = self.policy.assess_proposal(action('B', 'A'), 'repair', opportunity_id=decision.opportunity_id)
+        self.assertIn('recent_reversal', assessment.reasons)
+
+    def test_performance_opportunity_retires_when_latency_recovers_or_demand_changes(self):
+        for healthy, scope in ((True, 'demand-A'), (False, 'demand-B'), (None, 'demand-A')):
+            with self.subTest(healthy=healthy, scope=scope):
+                self.policy = StabilityPolicy(clock=self.clock)
+                for at in (0, 10, 20):
+                    self.policy.evaluate(self.performance_observation(at))
+                self.assertIsNotNone(self.policy.state.opportunity)
+                decision = self.policy.evaluate(self.performance_observation(30, healthy, scope=scope))
+                self.assertIn('opportunity_changed', decision.reasons)
+                self.assertIsNone(self.policy.state.opportunity)
+
+    def test_performance_restart_requires_fresh_sustained_evidence(self):
+        for at in (0, 10):
+            self.policy.evaluate(self.performance_observation(at))
+        self.policy = StabilityPolicy.restore(self.policy.snapshot().model_dump_json(), clock=self.clock)
+        self.assertEqual(self.policy.config.performance_samples, 3)
+        self.assertEqual(self.policy.evaluate(self.performance_observation(20)).recommendation,
+                         'collect_observations')
+        self.policy.evaluate(self.performance_observation(30))
+        decision = self.policy.evaluate(self.performance_observation(40))
+        self.assertEqual(decision.recommendation, 'permit_repair_evaluation')
+
     def test_temporary_congestion_clears_naturally(self):
         self.assertEqual(self.evaluate(0, 0.95).recommendation, 'collect_observations')
         self.assertEqual(self.evaluate(10, 0.4).recommendation, 'no_intervention')

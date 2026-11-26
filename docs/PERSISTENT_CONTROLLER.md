@@ -83,6 +83,41 @@ threshold and measured maximum utilization must fall by at least 5%, with
 per-flow delivery and loss guardrails. This also allows pressure from a change
 in offered demand at constant link capacity.
 
+Monitoring continues to check performance after acceptance. Each valid live
+window uses the calibrated reference for the same workload composition, offered
+rates, window duration, probe protocol and TBF capacity fingerprint. A window is
+degraded when mean host-pair probe RTT exceeds `baseline * 1.25 + 5 ms`, any
+receiver delivers below 90% of its baseline rate, or any receiver's loss exceeds
+its baseline by two percentage points. Probe RTT is a network-wide ICMP metric;
+it is not application latency. The original calibrated references remain fixed
+after an accepted change.
+
+Three consecutive degraded samples spanning at least 20 seconds permit a new
+`repair` evaluation with reason `performance_failure`, including when all hosts
+are reachable, OSPF is healthy and utilization is low. A good sample breaks the
+failure streak. Missing/incomparable evidence interrupts the streak and blocks
+optimization; known connectivity failures can still request repair. Changes in
+demand or measured capacity start a new performance scope. After a restart,
+fresh samples must establish a new streak. The observation's
+`runtime.performance` records the verdict, reference RTT, latency limit and
+failure details for inference and analysis.
+
+Performance repairs use the existing candidate, Batfish, deployment, readback
+and runtime gates. If the fresh before-window has already recovered, the
+executor rejects the unnecessary repair. A deployed repair that fails runtime
+checks is rolled back to its immediate checkpoint. Sustained degradation
+requests reassessment; it does not automatically revert every accepted change.
+Performance failures respect cooldowns, retry budgets, frequency limits and
+recent-reversal suppression, so an exact reversal of a recent controller change
+can be delayed by the default 120-second reversal window. Repair acceptance
+prioritizes baseline latency and delivery; it does not require a further 5%
+utilization reduction. Congestion remains independently monitored afterward.
+Use a fresh run directory when enabling this monitoring; existing live runs
+have a different saved performance-monitor protocol.
+Observation-only sessions keep their existing passive collection behavior and
+do not calibrate performance references; their performance verdict is unknown
+and their congestion observations remain available.
+
 Inspect `events.jsonl` for timestamped observations, per-flow receiver
 measurements, and decisions and outcomes. Each `sessions/<id>/` contains the
 session summary and, for traffic runs, the schedule's clock origin and

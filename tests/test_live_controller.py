@@ -68,6 +68,7 @@ class LiveControllerTests(unittest.TestCase):
         class LabFixture:
             routers = inventory
             failed = False
+            rtt = 1.5
 
             def expected_neighbors(self):
                 return {'sea': {'10.0.0.2'}, 'sva': {'10.0.0.1'}}
@@ -81,7 +82,7 @@ class LiveControllerTests(unittest.TestCase):
             def ping_matrix(self, deadline, **options):
                 self.probe_options = options
                 return [{'source': a, 'destination': b, 'reachable': a != 'sea' or not self.failed,
-                         'loss_fraction': float(a == 'sea' and self.failed), 'rtt_avg_ms': 1.5}
+                         'loss_fraction': float(a == 'sea' and self.failed), 'rtt_avg_ms': self.rtt}
                         for a, b in (('sea', 'sva'), ('sva', 'sea'))]
 
             def neighbors(self, deadline):
@@ -103,14 +104,60 @@ class LiveControllerTests(unittest.TestCase):
         self.assertEqual(lab.probe_options, {'count': 1, 'workers': 4})
         self.assertEqual(baseline.traffic['received_mbps'], 29.5)
         self.assertAlmostEqual(baseline.traffic['max_link_utilization'], 0.8)
+        self.assertIsNone(collector('generation-1', deadline).signal.performance)
+        collector.baselines[baseline.demand_id] = baseline
+        frame = collector('generation-1', deadline)
+        self.assertTrue(frame.signal.performance.healthy)
+        self.assertAlmostEqual(frame.runtime['performance']['latency_limit_ms'], 6.875)
+        lab.rtt = 20
+        frame = collector('generation-1', deadline)
+        self.assertFalse(frame.signal.performance.healthy)
+        self.assertTrue(frame.signal.reachability.healthy)
+        self.assertTrue(any('latency' in detail for detail in frame.runtime['performance']['details']))
+        lab.rtt = 1.5
+        rows[0].update(received_mbps=20, loss_fraction=0.1)
+        frame = collector('generation-1', deadline)
+        self.assertFalse(frame.signal.performance.healthy)
+        self.assertTrue(any('throughput' in detail for detail in frame.runtime['performance']['details']))
+        self.assertTrue(any('loss' in detail for detail in frame.runtime['performance']['details']))
+        rows[0].update(received_mbps=29.5, loss_fraction=0.016)
+        collector.baselines = {'other-demand': baseline}
+        self.assertIsNone(collector('generation-1', deadline).signal.performance.healthy)
+        collector.baselines = {baseline.demand_id: baseline}
         lab.failed = True
         frame = collector('generation-1', deadline)
         self.assertFalse(frame.signal.reachability.healthy)
+        self.assertTrue(frame.signal.performance.healthy)
         self.assertTrue(frame.signal.ospf.healthy)
         self.assertEqual(frame.signal.reachability.measurement_generation, 'generation-1')
         traffic.current = lambda: ('e2', demand_id(profile))
         with self.assertRaisesRegex(ValueError, 'demand changed'):
             collector.window('after', 'repair', deadline)
+
+    def test_performance_checks_each_concurrent_receiver_and_matching_reference(self):
+        net = DemoNetwork(DemoClock())
+        limit = SimpleNamespace(remaining=lambda: 60)
+        reference = net.window('healthy', 'repair', limit)
+        flows = [dict(source='sea', destination=dest, destination_port=5201, offered_mbps=rate,
+                      seconds=1, received_mbps=rate, loss_fraction=0)
+                 for dest, rate in [('sva', 50), ('lax', 40)]]
+        reference = reference.model_copy(update={
+            'source': 'live', 'capacity_sha256': 'a' * 64, 'traffic_scope': 'concurrent_udp',
+            'traffic': dict(mode='concurrent_udp', concurrency_verified=True,
+                            overlap_window=dict(start_seconds=0, end_seconds=1),
+                            max_link_utilization=.93, flows=flows)})
+        self.assertTrue(reference.performance_check(reference)['accepted'])
+        # Aggregate delivery is insufficient: each receiver must keep its rate.
+        bad_flows = [dict(flows[0], received_mbps=60), dict(flows[1], received_mbps=30)]
+        impaired = reference.model_copy(update={'traffic': dict(reference.traffic, flows=bad_flows)})
+        self.assertFalse(impaired.performance_check(reference)['accepted'])
+        loss = reference.model_copy(update={'traffic': dict(reference.traffic,
+                                     flows=[flows[0], dict(flows[1], loss_fraction=.03)])})
+        self.assertFalse(loss.performance_check(reference)['accepted'])
+        for changes in ({'capacity_sha256': None}, {'capacity_sha256': 'b' * 64},
+                        {'demand_id': 'different-demand'}, {'mean_rtt_ms': None}):
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, 'Incomparable'):
+                reference.model_copy(update=changes).performance_check(reference)
 
     def test_launcher_writes_live_session_summary_in_observe_only_mode(self):
         clock = DemoClock()

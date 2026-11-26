@@ -280,7 +280,10 @@ class LiveCollector:
                  for key, rate, capacity in sample.links if raw['flows'] and not raw['error']]
         identifier = uuid4().hex
         signal = NetworkObservation(observation_id=identifier, observed_at=at, links=rates,
-                                    reachability=reach, ospf=ospf, performance=performance)
+                                    reachability=reach, ospf=ospf,
+                                    # Observation-only sessions do not calibrate a
+                                    # reference; preserve their congestion signals.
+                                    performance=performance if self.baselines else None)
         raw.update(all_reachable=reach.healthy, ospf_healthy=ospf.healthy, mean_rtt_ms=health.mean_rtt_ms,
                    failed_pairs=[list(pair) for pair in failed],
                    mismatched_ospf=[list(adjacency) for adjacency in mismatch])

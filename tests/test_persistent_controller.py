@@ -448,6 +448,77 @@ class PersistentControllerTests(unittest.TestCase):
         self.assertEqual(self.outcomes(), ['success'])
         self.assertEqual(self.c.policy.state.interventions[0].kind, 'repair')
 
+    def test_accepted_optimization_followed_by_latency_regression_requests_verified_repair(self):
+        self.c.settings.duration = 42
+        self.net.load = lambda t: .95 if t < 6 else .52
+        original = self.net.window
+
+        def windows(phase, kind, limit):
+            value = original(phase, kind, limit)
+            # Optimization initially passes. Subsequent monitoring detects RTT
+            # regression; a new candidate must actually restore that tolerance.
+            if phase == 'before' and kind == 'repair':
+                value = value.model_copy(update={'mean_rtt_ms': 30})
+            return value
+
+        def sample(generation, limit):
+            frame = self.net.sample(generation, limit)
+            degraded = len(self.net.writes) == 1 and self.c.clock.seconds >= 10
+            frame.signal = frame.signal.model_copy(update={'performance': HealthMeasurement(
+                observed_at=frame.signal.observed_at, measurement_generation=generation,
+                healthy=not degraded, scope_fingerprint='same-demand', evidence='SYNTHETIC RTT tolerance')})
+            return frame
+
+        self.c.telemetry, self.c.executor.windows = sample, windows
+        self.c.run()
+        self.assertEqual(self.outcomes(), ['success', 'success'])
+        self.assertEqual([r.kind for r in self.c.policy.state.interventions], ['optimization', 'repair'])
+        self.assertEqual(self.net.writes, ['deploy', 'deploy'])
+        self.assertTrue(any('performance_failure' in e['decision']['reasons'] for e in self.events('observation')))
+        self.assertEqual(len([e for e in self.events('transition') if e['phase'] == 'verified']), 2)
+
+    def test_latency_repair_that_does_not_restore_tolerance_rolls_back(self):
+        self.c.settings.duration = 27
+        self.net.load = lambda t: .52
+        original = self.net.window
+
+        def windows(phase, kind, limit):
+            value = original(phase, kind, limit)
+            return value.model_copy(update={'mean_rtt_ms': 30 if phase != 'healthy' else 1})
+
+        def sample(generation, limit):
+            frame = self.net.sample(generation, limit)
+            frame.signal = frame.signal.model_copy(update={'performance': HealthMeasurement(
+                observed_at=frame.signal.observed_at, measurement_generation=generation,
+                healthy=False, scope_fingerprint='same-demand', evidence='SYNTHETIC RTT tolerance')})
+            return frame
+
+        self.c.telemetry, self.c.executor.windows = sample, windows
+        self.c.run()
+        self.assertEqual(self.outcomes(), ['rolled_back'])
+        self.assertEqual(self.net.writes, ['deploy', 'rollback'])
+        self.assertEqual(self.net.config, self.net.initial)
+
+    def test_performance_recovers_during_inference_before_any_write(self):
+        self.c.settings.duration = 27
+        self.net.load = lambda t: .52
+
+        def sample(generation, limit):
+            frame = self.net.sample(generation, limit)
+            frame.signal = frame.signal.model_copy(update={'performance': HealthMeasurement(
+                observed_at=frame.signal.observed_at, measurement_generation=generation,
+                healthy=False, scope_fingerprint='same-demand', evidence='SYNTHETIC earlier slow window')})
+            return frame
+
+        # Fresh executor windows are healthy even though earlier periodic
+        # telemetry triggered evaluation. A model proposal must not cause a write.
+        self.c.telemetry = sample
+        self.c.run()
+        self.assertEqual(self.outcomes(), ['rejected'])
+        self.assertEqual(self.c.policy.state.interventions[-1].outcomes[-1].outcome.evidence,
+                         'repair_already_healthy')
+        self.assertEqual(self.net.writes, [])
+
     def test_stale_after_window_rolls_back(self):
         original = self.net.window
         def window(phase, kind, limit):

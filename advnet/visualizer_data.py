@@ -103,6 +103,7 @@ def continuous_experiment(name, rows, *, replay=False):
                          'mean_rtt_ms': runtime.get('mean_rtt_ms'), 'failed_pairs': failed,
                          'ospf_healthy': runtime.get('ospf_healthy'),
                          'mismatched_ospf': runtime.get('mismatched_ospf'),
+                         'performance': runtime.get('performance'),
                          'traffic': {'link_utilization': runtime.get('link_utilization', {})},
                          'port_rates': ports}
                 checkpoint = {'kind': 'measurement', 'label': 'Controller observation', 'phase': last_phase,
