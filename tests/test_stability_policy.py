@@ -42,12 +42,13 @@ class StabilityPolicyTests(unittest.TestCase):
     def observation(self, at, utilization=0.4, *, reachable=True, ospf=True, links=None):
         self.clock.seconds = at
         now = self.clock()
+        generation = self.policy.measurement_generation
         return NetworkObservation(
             observation_id=f'synthetic-{at}', observed_at=now,
-            reachability=HealthMeasurement(observed_at=now, healthy=reachable, evidence='SYNTHETIC host matrix'),
-            ospf=HealthMeasurement(observed_at=now, healthy=ospf, evidence='SYNTHETIC required FULL peers'),
+            reachability=HealthMeasurement(measurement_generation=generation, observed_at=now, healthy=reachable, evidence='SYNTHETIC host matrix'),
+            ospf=HealthMeasurement(measurement_generation=generation, observed_at=now, healthy=ospf, evidence='SYNTHETIC required FULL peers'),
             links=links if links is not None else [LinkMeasurement(
-                link_id='r1:Ethernet1', observed_at=now, utilization=utilization,
+                link_id='r1:Ethernet1', measurement_generation=generation, observed_at=now, utilization=utilization,
                 utilization_evidence='SYNTHETIC measured utilization')],
         )
 
@@ -405,6 +406,8 @@ class StabilityPolicyTests(unittest.TestCase):
             outer = self.observation(at, 0.95)
             decision = self.policy.evaluate({**outer.model_dump(), 'links': sample.links})
             self.assertIn('non_increasing_observation', decision.reasons)
+            self.assertEqual(decision.recommendation, 'collect_observations')
+            self.assertIsNone(decision.opportunity_id)
         self.assertEqual(self.policy.state.signals['link:r1:Ethernet1'].count, 1)
 
     def test_gap_breaks_sustained_condition(self):
@@ -451,8 +454,10 @@ class StabilityPolicyTests(unittest.TestCase):
         older = self.policy.state.recent_observations[-1]
         outer = self.observation(20, 0.95)
         decision = self.policy.evaluate({**outer.model_dump(), 'reachability': older.reachability, 'ospf': older.ospf})
-        # Cached health is explicitly insufficient, even with a fresh wrapper.
-        self.assertEqual(decision.recommendation, 'insufficient_telemetry')
+        self.assertEqual(decision.recommendation, 'permit_optimization_evaluation')
+        self.clock.seconds = 26  # The link is fresh but both health measurements have expired.
+        checked = self.policy.assess_proposal(action(), 'optimization', opportunity_id=decision.opportunity_id)
+        self.assertIn('stale_telemetry', checked.reasons)
 
     def test_proposal_expires_when_essential_inner_sample_expires(self):
         self.evaluate(0, 0.95)
@@ -701,6 +706,152 @@ class StabilityPolicyTests(unittest.TestCase):
         for at in (-99, -89, -79):
             self.assertEqual(self.evaluate(at, 0.95).recommendation, 'collect_observations')
         self.assertEqual(self.evaluate(-70, 0.95).recommendation, 'permit_optimization_evaluation')
+
+    def test_completion_boundary_applies_to_inner_health_samples(self):
+        self.ready()
+        self.begin()
+        self.clock.seconds = 100
+        self.policy.complete_intervention('i1', outcome('success'))
+        for envelope, measured in [(101, 90), (102, 95), (103, 100), (104, 104), (109, 109)]:
+            sample = self.observation(envelope, reachable=False)
+            failed = sample.reachability.model_copy(update={'observed_at': BASE + timedelta(seconds=measured)})
+            decision = self.policy.evaluate({**sample.model_dump(), 'reachability': failed})
+            if measured <= 104:
+                self.assertNotEqual(decision.recommendation, 'permit_repair_evaluation')
+                self.assertIsNone(self.policy.state.opportunity)
+        self.assertIn('urgent_repair_cooldown_exception', decision.reasons)
+        self.assertEqual(self.policy.start_intervention('i2', action(), 'repair',
+                         opportunity_id=decision.opportunity_id).stage, 'reservation')
+
+    def test_staggered_fresh_health_supports_new_link_measurements(self):
+        permits = []
+        for t in range(0, 31, 5):
+            sample = self.observation(t, 0.95)
+            fields = {}
+            for name, offset in [('reachability', 0), ('ospf', 5)]:
+                measured = BASE + timedelta(seconds=t - (t - offset) % 10)
+                fields[name] = getattr(sample, name).model_copy(update={'observed_at': measured})
+            decision = self.policy.evaluate({**sample.model_dump(), **fields})
+            if decision.recommendation.startswith('permit_'):
+                permits.append(t)
+        self.assertEqual(permits, [20])
+        self.assertIn('opportunity_pending', decision.reasons)
+        self.assertEqual(self.policy.state.signals['health:reachability'].recovery_count, 4)
+
+    def test_restart_cannot_replay_resolved_failures(self):
+        old = [self.observation(t, reachable=False).reachability for t in (0, 5)]
+        for t in (0, 5):
+            self.evaluate(t, reachable=False)
+        self.evaluate(6)
+        self.assertIn('recovery_confirmed', self.evaluate(11).reasons)
+        saved = self.policy.snapshot().model_dump_json()
+        for origin in (12, -1):
+            with self.subTest(origin=origin):
+                self.clock.seconds = origin
+                self.policy = StabilityPolicy.restore(saved, clock=self.clock)
+                for t, replay in zip((12, 13), old):
+                    wrapper = self.observation(t)
+                    decision = self.policy.evaluate({**wrapper.model_dump(), 'reachability': replay})
+                    self.assertNotEqual(decision.recommendation, 'permit_repair_evaluation')
+                self.evaluate(15, reachable=False)
+                self.assertEqual(self.evaluate(20, reachable=False).recommendation, 'permit_repair_evaluation')
+
+    def test_restoring_same_checkpoint_twice_rejects_abandoned_generation(self):
+        saved = self.policy.snapshot().model_dump_json()
+        self.policy = StabilityPolicy.restore(saved, clock=self.clock)
+        first = self.observation(10, reachable=False).reachability
+        second = self.observation(15, reachable=False).reachability
+        self.clock.seconds = 5
+        self.policy = StabilityPolicy.restore(saved, clock=self.clock)
+        for t, replay in ((16, first), (17, second)):
+            wrapper = self.observation(t)
+            result = self.policy.evaluate({**wrapper.model_dump(), 'reachability': replay})
+            self.assertIn('old_measurement_generation', result.reasons)
+            self.assertIsNone(self.policy.state.opportunity)
+
+    def test_disputed_link_timestamp_cannot_seed_another_streak(self):
+        self.evaluate(0, 0.95)
+        self.evaluate(10, 0.95)
+        for wrapper, value in [(11, 0.1), (12, 0.95), (13, 0.1)]:
+            sample = self.observation(wrapper, value)
+            link = sample.links[0].model_copy(update={'observed_at': BASE + timedelta(seconds=10)})
+            decision = self.policy.evaluate({**sample.model_dump(), 'links': [link]})
+            self.assertIn('conflicting_measurement', decision.reasons)
+            self.assertEqual(self.policy.state.signals['link:r1:Ethernet1'].count, 0)
+        self.assertEqual(self.ready(20).recommendation, 'permit_optimization_evaluation')
+
+    def test_disputed_health_cannot_qualify_failure_or_recovery(self):
+        for first in (True, False):
+            with self.subTest(first=first):
+                self.setUp()
+                self.evaluate(0, reachable=first)
+                for wrapper, value in [(1, not first), (2, first)]:
+                    sample = self.observation(wrapper, reachable=value)
+                    health = sample.reachability.model_copy(update={'observed_at': BASE})
+                    decision = self.policy.evaluate({**sample.model_dump(), 'reachability': health})
+                    self.assertIn('conflicting_measurement', decision.reasons)
+                    signal = self.policy.state.signals['health:reachability']
+                    self.assertEqual((signal.count, signal.recovery_count), (0, 0))
+                self.evaluate(5, reachable=False)
+                self.assertEqual(self.evaluate(10, reachable=False).recommendation, 'permit_repair_evaluation')
+
+    def test_replayed_readback_preserves_history_and_pending_request(self):
+        self.change(0, 'A', 'B')
+        recorded = self.policy.state.changes[0].change
+        self.policy = StabilityPolicy.restore(self.policy.snapshot().model_dump_json(), clock=self.clock)
+        token = self.ready(120).opportunity_id
+        for evidence in ['original capture redelivered', 'another copy']:
+            self.policy.record_configuration_change(recorded.model_copy(update={'evidence': evidence}))
+        self.assertEqual(len(self.policy.state.changes), 1)
+        self.assertIn('proposal_eligible', self.policy.assess_proposal(
+            action('B', 'A'), 'optimization', opportunity_id=token).reasons)
+
+    def test_conflict_in_duplicate_envelope_only_disputes_changed_source(self):
+        self.evaluate(0, 0.95)
+        original = self.observation(10, 0.95)
+        self.policy.evaluate(original)
+        contradictory = original.links[0].model_copy(update={'utilization': 0.1})
+        conflict = self.policy.evaluate({**original.model_dump(), 'links': [contradictory]})
+        self.assertIn('conflicting_measurement', conflict.reasons)
+        wrapper = self.observation(11)
+        result = self.policy.evaluate({**wrapper.model_dump(), 'links': original.links})
+        self.assertIn('conflicting_measurement', result.reasons)
+        self.assertEqual(self.policy.state.signals['health:ospf'].recovery_count, 3)
+        self.assertEqual(self.policy.state.signals['link:r1:Ethernet1'].count, 0)
+
+    def test_restore_deduplicates_legacy_configuration_readbacks(self):
+        self.change(0, 'A', 'B')
+        saved = json.loads(self.policy.snapshot().model_dump_json())
+        record = saved['state']['changes'][0]
+        record['change'].pop('event_id', None)
+        saved['state']['changes'] = [record, record, record]
+        self.policy = StabilityPolicy.restore(json.dumps(saved), clock=self.clock)
+        self.assertEqual(len(self.policy.state.changes), 1)
+        self.ready(120)
+        self.assertIn('proposal_eligible', self.policy.assess_proposal(
+            action('B', 'A'), 'optimization', opportunity_id=self.request_id).reasons)
+
+    def test_configuration_event_id_collision_preserves_original_change(self):
+        change = ConfigurationChange(event_id='readback-1', occurred_at=self.clock(), scope='test',
+                                     before_state='A', after_state='B', evidence='synthetic')
+        self.policy.record_configuration_change(change)
+        with self.assertRaises(ValueError):
+            self.policy.record_configuration_change(change.model_copy(update={'after_state': 'C'}))
+        self.assertEqual([record.change for record in self.policy.state.changes], [change])
+
+    def test_bystander_spike_identifies_retired_request_and_link(self):
+        for t in (0, 10, 20, 25):
+            sample = self.observation(t, 0.95)
+            other = sample.links[0].model_copy(update={'link_id': 'bystander', 'utilization': 0.86 if t == 25 else 0.3})
+            decision = self.policy.evaluate({**sample.model_dump(), 'links': [*sample.links, other]})
+            if t == 20:
+                token = decision.opportunity_id
+        self.assertIn('bystander_threshold_crossing', decision.reasons)
+        self.assertEqual(decision.opportunity_id, token)
+        self.assertEqual(decision.links, ['bystander'])
+        self.assertIsNone(self.policy.state.opportunity)
+        self.assertIn('no_evaluation_opportunity', self.policy.assess_proposal(
+            action(), 'optimization', opportunity_id=token).reasons)
 
     def test_invalid_clock_contract(self):
         for value in (1, datetime(2026, 1, 1)):

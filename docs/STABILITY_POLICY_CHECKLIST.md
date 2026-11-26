@@ -52,7 +52,7 @@ measurements; they do not mock its decision logic.
 | [x] | No permanent blacklist of legitimate repairs | Bounded history windows and repair recommendation retry interval; `test_unresolved_repair_retries_without_permanent_latch`, expiration tests. |
 | [x] | Persist observations, sustained signals, triggers, deadlines, active ID, outcomes and changes | `PolicyState`, `snapshot()`, `restore()`; snapshot/active/clock-origin tests. |
 | [x] | Injected time and safe clock-origin restoration | UTC clock callable, remaining-budget rebasing, audit clock generations; backward/forward restoration and clock-regression tests. |
-| [x] | Offline module independent of future experiment architecture | Imports limited to standard library, Pydantic and existing `Contract`; all 78 new tests execute without a lab. No controller/runner is installed or wired in. |
+| [x] | Offline module independent of future experiment architecture | Imports limited to standard library, Pydantic and existing `Contract`; all stability tests execute without a lab. No controller/runner is installed or wired in. |
 | [x] | Preserve existing verification and rollback safeguards | Existing `pipeline.py`, `trial.py`, `lab.py`, `experiment.py`, shared lock, bounded runner and PR #6 files unchanged. Full offline regression suite passes. |
 | [x] | Synthetic repeatable simulation records time, conditions, decisions/reasons, outcomes, cooldowns, safeguards and transitions | `advnet/stability_simulation.py`; four `StabilitySimulationTests` cover deterministic equality, milestone evidence, restorable artifacts and output preservation. |
 | [x] | Documentation and defaults explicitly uncalibrated | `STABILITY_POLICY.md`, this checklist and README entry. No scientifically validated thresholds or live improvement claims. |
@@ -70,40 +70,59 @@ measurements; they do not mock its decision logic.
 | 9. Bounded retry and recovery | Fixed lifetime, minimum dispatch interval, per-kind backoff, explicit closure and conservative restore. | `test_cancelled_or_rejected_inference_retries_only_after_backoff_and_cooldown`, `test_absolute_expiry_and_delayed_reply_after_reissue`, `test_restore_drops_inflight_token_but_allows_bounded_retry` |
 | 10–11. Existing safety | An unconfirmed rollback retains the active slot. Fresh telemetry, hysteresis, frequency limits, cooldowns and action-history checks still govern reservations. | Scenarios 5–15 and 18–20 above, plus simulation milestones at 100s, 240s, 545s and 640s. |
 
-## Exact offline verification commands
+## PR #7 independent review regressions
 
-Executed with the existing project `.venv`; no dependency installation was needed.
+| Finding | Implemented rule | Regression tests in `tests/test_stability_policy.py` |
+| --- | --- | --- |
+| Delayed failures during cooldown | Every completed outcome sets an exclusive boundary for inner measurement times. Genuinely new sustained reachability failures retain the urgent exception. | `test_completion_boundary_applies_to_inner_health_samples` |
+| Staggered source clocks | Fresh unchanged health supports advancing link samples. Each distinct source reading contributes at most one failure or recovery vote. Proposal assessment checks the original inner timestamps. | `test_staggered_fresh_health_supports_new_link_measurements`, `test_cached_inner_samples_do_not_accumulate`, `test_proposal_freshness_uses_measurement_time` |
+| Replay after recovery and restart | Restore fences every source by a unique measurement generation and a strict post-restore time boundary, including repeated restores of one snapshot. Safety windows and unfinished outcomes survive. | `test_restart_cannot_replay_resolved_failures`, `test_restoring_same_checkpoint_twice_rejects_abandoned_generation`, existing rollback and cooldown restore tests |
+| Contradictory readings | Clear the affected streak and quarantine the disputed timestamp through replay. Other measurements in the same envelope retain independent ordering. | `test_disputed_link_timestamp_cannot_seed_another_streak`, `test_disputed_health_cannot_qualify_failure_or_recovery`, `test_conflict_in_duplicate_envelope_only_disputes_changed_source` |
+| Duplicate actual-change readbacks | Deduplicate by stable transition identity before modifying history or retiring a request. Restore deduplicates legacy entries. Reject inconsistent reuse of an explicit ID. | `test_replayed_readback_preserves_history_and_pending_request`, `test_restore_deduplicates_legacy_configuration_readbacks`, `test_configuration_event_id_collision_preserves_original_change`, existing reversal and state-switching tests |
+| Single non-target spike during inference | Retain cancellation because the proposed route is still unknown. Emit the retired token, affected link IDs and `bystander_threshold_crossing`. | `test_bystander_spike_identifies_retired_request_and_link` |
+
+## Offline verification after the review fixes
+
+The combined checkout used the existing local review commit `1888cea0` with
+parents `6cb49d7d` (fetched main, including PR #6) and `119fc1d2` (reviewed
+PR head). The corrections were applied to a detached checkout for verification.
+The independent script was run unmodified before and after the fixes.
+
+| Check | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| Stability policy and simulation tests | 89 | 0 | 0 |
+| Dynamic traffic tests | 127 | 0 | 1 |
+| Full combined suite, including both subsets | 413 | 0 | 7 |
+| Independent probes on original PR head | 6 | 6 | 0 |
+| Same independent probes on corrected code | 11 | 1 | 0 |
+| Synthetic simulation milestone checks | 20 | 0 | 0 |
+| Offline scenario validation | 30 | 0 | 0 |
+
+The remaining independent assertion is
+`test_single_bystander_spike_should_not_cancel_sustained_target`. It expects a
+late proposal to remain eligible after another link crosses the congestion
+threshold. The documented policy retires that token. Its dedicated regression
+checks both the cancellation record and refusal of the late candidate.
+Five live integration tests were disabled and two optional SDK tests were
+skipped. The scenario validator reported zero model calls and zero router writes.
+
+Commands used in the combined checkout with the existing project environment:
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -p 'test_stability*.py' -v
-.venv/bin/python -m advnet.stability_simulation --output /tmp/advnet-stability-inference-verified
+RUN_BATFISH_INTEGRATION=0 RUN_TRAFFIC_INTEGRATION=0 RUN_DYNAMIC_TRAFFIC_INTEGRATION=0 .venv/bin/python -m unittest discover -s tests -p 'test_dynamic*.py' -v
 RUN_BATFISH_INTEGRATION=0 RUN_TRAFFIC_INTEGRATION=0 RUN_DYNAMIC_TRAFFIC_INTEGRATION=0 .venv/bin/python -m unittest discover -s tests -v
-.venv/bin/python -m py_compile advnet/stability_policy.py advnet/stability_simulation.py tests/test_stability_policy.py tests/test_stability_simulation.py
+PYTHONPATH=. .venv/bin/python /tmp/comp7311-pr7-review.P9b9XY/review_cases.py
+.venv/bin/python -m advnet.stability_simulation --output ../simulation-final
 .venv/bin/python -m compileall -q advnet tests scripts
 .venv/bin/python scripts/scenario-suite.py validate
 git diff --check
-git diff --cached --check
 ```
 
-The full regression log was retained at `/tmp/advnet-stability-inference-regression.log`.
-New tests: **78 discovered, 78 passed, 0 failures/errors, 0 skips**.
-Complete suite: **281 discovered, 275 passed, 0 failures/errors, 6 skips**.
-The existing main-based suite contributes 203 tests: 197 passed and six skipped.
-PR #6's dynamic tests are on its unchanged separate branch, not this main-based
-branch. `RUN_DYNAMIC_TRAFFIC_INTEGRATION=0` was still set explicitly as requested.
-
-The six skips are **four disabled live tests** (three Batfish, one traffic) and
-**two tests requiring absent optional SDKs** (OpenAI-compatible and TypeSafe).
-They are not counted as passes or successful live verification. No additional
-live integration flags were found in this branch's tests.
-
-Syntax/compilation checks and the repository's 30-case offline scenario-model
-validator pass. No configured Ruff/Flake8/mypy/CI lint checks were found, and
-those linters are absent from the existing environment. Browser checks and the
-Docker-based Diamond check are unrelated live/UI workflows, not offline static
-checks for this policy, and were not invoked. Whitespace checks pass; complete
-branch review is limited to the new policy, simulation, their tests and docs,
-plus the README link.
+The feature checkout also passed `git diff --cached --check`. The repository
+has no configured Python linter. Offline results cover policy behavior and
+regressions in the combined tree. Live telemetry cadence, shaping evidence and
+the frequency of discarded model requests under real bursts require lab measurements.
 
 ## Simulation inspection
 

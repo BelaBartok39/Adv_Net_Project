@@ -94,9 +94,14 @@ caller must supply every link it expects the policy to cover. No link samples
 means insufficient utilization evidence. Missing, invalid or stale samples reset
 pending evidence for affected signals; they cannot prove recovery or clear a
 latch. A gap above `max_gap_seconds` restarts sustained and recovery counting.
-Repeated inner timestamps and non-increasing enclosing timestamps cannot add
-samples. Cached measurements wrapped in a fresh timestamp cannot trigger a new
-evaluation. Invalid observation dictionaries produce `invalid_telemetry`;
+A fresh, identical cached reading can supply context while another source
+advances. For example, staggered healthy reachability and OSPF checks can
+support a newly measured congested link. Only a distinct, advancing measurement
+counts toward its source's failure or recovery streak. A repeated timestamp may
+appear as the informational reason `non_increasing_observation`. A contradictory
+reading at the same measurement timestamp produces `conflicting_measurement`
+and resets the affected streak. Both versions of that timestamp remain unusable.
+A strictly newer valid reading can begin a new streak. Invalid observation dictionaries produce `invalid_telemetry`;
 malformed configuration, lifecycle calls and snapshots raise validation errors
 without accepting an intervention.
 
@@ -126,6 +131,10 @@ OSPF-only repairs cannot. Disable this through
 active intervention, unconfirmed rollback, frequency limits, candidate history
 checks, verification, checkpoint validation or runtime acceptance requirements.
 The exception produces `urgent_repair_cooldown_exception` in the trigger decision.
+Recording any intervention outcome establishes an exclusive lower bound on each
+inner measurement timestamp. For a completion at 100 s, failures measured at
+90 s, 95 s or 100 s cannot justify a new repair. Distinct failures measured at
+101 s and 106 s can qualify under the default urgent-repair settings.
 
 The two consultation stages are deliberately distinct:
 
@@ -155,6 +164,15 @@ route ages excluded. Use consistently scoped route-state fingerprints for routin
 history. The policy cannot discover omitted changes or correlate inconsistent
 scopes; the existing deployment layer must still compare the current checkpoint
 against the candidate's starting state.
+
+Use a stable `event_id` and the original `occurred_at` for every delivery of
+the same transition. Legacy callers can omit the ID if scope, occurrence time,
+and before/after fingerprints together uniquely identify the transition.
+Repeated delivery, even with different evidence text, preserves the original
+history entry, safety deadlines and any pending opportunity. Reusing an ID with
+different transition data raises an error. Supply distinct stable IDs when
+two actual transitions could otherwise have identical tuples (for example after
+a clock reset). Polling an unchanged configuration produces no change event.
 
 ## Integration interface
 
@@ -206,8 +224,16 @@ Use a stable fingerprint of the monitored subjects and failing peers or host
 pairs if their identities matter. Aggregate booleans alone cannot reveal a
 change from one failed peer to another. Report observed configuration/route
 changes via `record_configuration_change()`: the policy conservatively retires
-pending inference on any such readback. Essential evidence gaps and stale
+pending inference on each newly recorded transition. Essential evidence gaps and stale
 samples also retire the request.
+
+One crossing of the high threshold on a non-target link retires an optimization
+request, even if the link returns to its former load in the next sample.
+During inference the policy has no proposed path to check for traffic shifting
+onto that link. The cancellation decision carries `bystander_threshold_crossing`,
+the retired `opportunity_id` and the affected link IDs in `links`. Record it
+to quantify discarded requests under bursty traffic. Only an observation-stage
+permit starts new inference.
 
 The deadline expires at equality and monitoring never extends it. Expiry is
 processed on the next evaluation or matching proposal lookup. If a worker
@@ -264,6 +290,18 @@ unreleased format 1 is rejected; do not resume an active intervention by
 creating an empty policy if restoration fails.
 An active intervention and unconfirmed rollback survive every restore.
 
+Every restore starts a fresh measurement generation, including when restoring
+the same checkpoint twice. Read `policy.measurement_generation` when starting
+a collection and retain that value on each inner `HealthMeasurement` and
+`LinkMeasurement` through caching and delivery. The initial value is `None`
+for compatibility with existing producers. After restore, an old or untagged
+measurement produces `old_measurement_generation`. Within the new generation
+each source must also measure strictly after the restore time. These two checks
+preserve ordering across restarts even when clock ranges overlap. Discarding
+a cached result and collecting again is necessary if its generation is unknown.
+This reader accepts older format-2 snapshots and collapses duplicate legacy
+readback entries within the same audit clock generation.
+
 Only recent observations are bounded. Intervention and configuration histories
 are retained for audit and identifier uniqueness; callers must plan storage and
 archiving for very long experiments. Expired histories no longer suppress
@@ -286,14 +324,14 @@ writer/owner should be allowed to supply or edit them.
 - `lab.py`: collection/deployment are external. In particular, a utilization value
   derived from `Lab.capacities` alone is not sufficient evidence of live shaping.
 - `experiment.py` and bounded runner: no lock, execution or acceptance change.
-- PR #6 (`ef645bb752ec4db1d14b937cdc08ae22b343fe6f`, open at review): its scheduler
+- PR #6 (`ef645bb752ec4db1d14b937cdc08ae22b343fe6f`, merged into main): its scheduler
   uses relative monotonic timing, and its evidence supplies clock-origin/UTC
   anchors, experiment IDs, flow lifecycle and per-segment receiver measurements.
   It does not supply periodic router utilization or health observations. A future
   adapter must correlate separate policy evidence with the experiment ID and
   convert timestamps using a verified common timeline; offered rates and flow
   events cannot replace measured network state. The PR's exclusive Abilene lock
-  remains untouched. This branch starts from main and does not merge PR #6.
+  remains untouched. The offline regression run includes PR #6 and the corrected policy.
 
 ## Reproducible offline simulation
 

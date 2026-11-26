@@ -36,7 +36,8 @@ Reason = Literal[
     'no_evaluation_opportunity', 'opportunity_expired', 'state_already_applied',
     'clock_regression', 'state_history_mismatch', 'opportunity_pending',
     'opportunity_changed', 'opportunity_cancelled', 'opportunity_rejected',
-    'opportunity_retry_wait', 'opportunity_id_mismatch',
+    'opportunity_retry_wait', 'opportunity_id_mismatch', 'conflicting_measurement',
+    'old_measurement_generation', 'before_evidence_boundary', 'bystander_threshold_crossing',
 ]
 
 
@@ -52,6 +53,7 @@ class LinkMeasurement(PolicyContract):
     """
     link_id: Identifier
     observed_at: AwareDatetime
+    measurement_generation: Identifier | None = None
     throughput_mbps: float | None = Field(default=None, ge=0)
     throughput_evidence: Identifier | None = None
     effective_capacity_mbps: float | None = Field(default=None, gt=0)
@@ -91,6 +93,7 @@ class LinkMeasurement(PolicyContract):
 class HealthMeasurement(PolicyContract):
     """Aggregate over the caller's explicit required hosts or OSPF adjacencies."""
     observed_at: AwareDatetime
+    measurement_generation: Identifier | None = None
     healthy: bool | None
     scope_fingerprint: Identifier | None = None
     evidence: Identifier
@@ -102,6 +105,10 @@ class NetworkObservation(PolicyContract):
     links: list[LinkMeasurement] = Field(default_factory=list)
     reachability: HealthMeasurement | None = None
     ospf: HealthMeasurement | None = None
+
+    def sources(self):
+        return {'health:reachability': self.reachability, 'health:ospf': self.ospf,
+                **{'link:' + link.link_id: link for link in self.links}}
 
     @model_validator(mode='after')
     def sample_order(self):
@@ -185,11 +192,20 @@ class CandidateAction(PolicyContract):
 
 class ConfigurationChange(PolicyContract):
     """An actual observed change, including external changes and rollbacks."""
+    event_id: Identifier | None = None
     occurred_at: AwareDatetime
     scope: Identifier
     before_state: Identifier
     after_state: Identifier
     evidence: Identifier
+
+    @property
+    def transition(self):
+        return (self.scope, self.occurred_at, self.before_state, self.after_state)
+
+    @property
+    def identity(self):
+        return self.event_id if self.event_id is not None else self.transition
 
     @model_validator(mode='after')
     def changes_state(self):
@@ -243,11 +259,23 @@ class ActiveIntervention(PolicyContract):
 class SignalState(PolicyContract):
     first_at: AwareDatetime | None = None
     last_at: AwareDatetime | None = None
+    last_sample: LinkMeasurement | HealthMeasurement | None = None
     count: int = Field(default=0, ge=0)
     latched: bool = False
     retry_after: AwareDatetime | None = None
     recovery_first_at: AwareDatetime | None = None
     recovery_count: int = Field(default=0, ge=0)
+
+    def interrupted(self):
+        """Discard continuity, retaining ordering and the latch until real recovery."""
+        return SignalState(last_at=self.last_at, last_sample=self.last_sample,
+                           latched=self.latched, retry_after=self.retry_after)
+
+    def dispute(self, sample):
+        watermark = self.last_at
+        if sample is not None and (watermark is None or sample.observed_at > watermark):
+            watermark = sample.observed_at
+        return SignalState(last_at=watermark, latched=self.latched, retry_after=self.retry_after)
 
     @model_validator(mode='after')
     def consistent_counts(self):
@@ -278,9 +306,11 @@ class EvaluationOpportunity(PolicyContract):
 
 
 class PolicyState(PolicyContract):
+    measurement_generation: Identifier | None = None
     clock_generation: int = Field(default=0, ge=0)
     recent_observations: list[NetworkObservation] = Field(default_factory=list)
     signals: dict[str, SignalState] = Field(default_factory=dict)
+    evidence_after: AwareDatetime | None = None
     last_observation_at: AwareDatetime | None = None
     last_clock_at: AwareDatetime | None = None
     cooldown_until: AwareDatetime | None = None
@@ -363,6 +393,12 @@ class StabilityPolicy:
     def state(self):
         return self._state.model_copy(deep=True)
 
+    @property
+    @_serialized
+    def measurement_generation(self):
+        """Tag measurements with this generation at collection, before caching."""
+        return self._state.measurement_generation
+
     def _now(self):
         value = self._clock()
         if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
@@ -390,17 +426,46 @@ class StabilityPolicy:
         return 'future_telemetry' if age < 0 else ('stale_telemetry' if age > self.config.max_age_seconds else None)
 
     def _reset_pending(self):
-        self._update(signals={key: SignalState(latched=value.latched, retry_after=value.retry_after)
-                              for key, value in self._state.signals.items()}, opportunity=None)
+        self._update(signals={key: value.interrupted() for key, value in self._state.signals.items()},
+                     opportunity=None)
 
-    def _signal(self, key, at, *, degraded, clear, samples, seconds):
-        """Advance only once per measurement timestamp; gaps break continuity."""
-        old = self._state.signals.get(key, SignalState())
-        if old.last_at is not None and at <= old.last_at:
-            return False, False, 'non_increasing_observation'
+    def _sample_error(self, sample, now):
+        if sample.measurement_generation != self._state.measurement_generation:
+            return 'old_measurement_generation'
+        if self._state.evidence_after and sample.observed_at <= self._state.evidence_after:
+            return 'before_evidence_boundary'
+        return self._freshness(sample.observed_at, now)
+
+    def _signal(self, old, sample, now):
+        """Return updated state, readiness, recovery and an optional diagnostic."""
+        issue = self._sample_error(sample, now)
+        at = sample.observed_at
+        if issue:
+            return old.interrupted(), False, False, issue
+        if old.last_at is not None and at < old.last_at:
+            return old.interrupted(), False, False, 'non_increasing_observation'
+        if at == old.last_at and sample != old.last_sample:
+            # A null sample at an occupied watermark marks a disputed timestamp.
+            return old.dispute(sample), False, False, 'conflicting_measurement'
+        health = isinstance(sample, HealthMeasurement)
+        value = sample.healthy if health else sample.reliable_utilization
+        if value is None:
+            missing = old.interrupted().model_copy(update={'last_at': at, 'last_sample': sample})
+            return missing, False, False, 'missing_health' if health else 'missing_utilization'
+        if at == old.last_at:
+            # Still fresh context, never a second vote for failure or recovery.
+            return old, False, False, None
         gap = old.last_at is not None and (at - old.last_at).total_seconds() > self.config.max_gap_seconds
         if gap:
-            old = SignalState(latched=old.latched, retry_after=old.retry_after)
+            old = old.interrupted()
+        if health:
+            if old.last_sample and sample.scope_fingerprint != old.last_sample.scope_fingerprint:
+                old = SignalState()
+            degraded, clear = not value, value
+            samples, seconds = self.config.repair_samples, self.config.repair_seconds
+        else:
+            degraded, clear = value >= self.config.congestion_high, value <= self.config.congestion_clear
+            samples, seconds = self.config.congestion_samples, self.config.congestion_seconds
         first, count = (old.first_at or at, old.count + 1) if degraded else (None, 0)
         recovery_first, recovery_count = ((old.recovery_first_at or at, old.recovery_count + 1)
                                           if clear else (None, 0))
@@ -409,11 +474,10 @@ class StabilityPolicy:
         latched = old.latched and not recovered and (old.retry_after is None or at < old.retry_after)
         ready = bool(degraded and not latched and count >= samples
                      and (at - first).total_seconds() >= seconds)
-        signal = SignalState(first_at=first, last_at=at, count=count, latched=latched,
+        signal = SignalState(first_at=first, last_at=at, last_sample=sample, count=count, latched=latched,
                              retry_after=old.retry_after if latched else None,
                              recovery_first_at=recovery_first, recovery_count=recovery_count)
-        self._update(signals={**self._state.signals, key: signal})
-        return ready, bool(recovered and old.latched), 'measurement_gap' if gap else None
+        return signal, ready, bool(recovered and old.latched), 'measurement_gap' if gap else None
 
     def _block(self, now, *, urgent=False):
         active = self._state.active
@@ -496,9 +560,15 @@ class StabilityPolicy:
             if link.link_id in op.links:
                 if utilization <= self.config.congestion_clear:
                     return 'opportunity_changed'
-            elif (utilization >= self.config.congestion_high) != (opening_link.reliable_utilization >= self.config.congestion_high):
-                return 'opportunity_changed'
+        if self._changed_bystanders(op, latest):
+            return 'bystander_threshold_crossing'
         return None
+
+    def _changed_bystanders(self, op, latest):
+        initial = {link.link_id: link.reliable_utilization for link in op.opening.links}
+        high = self.config.congestion_high
+        return [link.link_id for link in latest.links if link.link_id not in op.links
+                and (link.reliable_utilization >= high) != (initial[link.link_id] >= high)]
 
     @_serialized
     def close_opportunity(self, opportunity_id: str, reason: Literal['cancelled', 'rejected']):
@@ -537,67 +607,70 @@ class StabilityPolicy:
             self._reset_pending()
             return self._decision(now, 'insufficient_telemetry', [error], observation_id=observation.observation_id)
         if self._state.last_observation_at and observation.observed_at <= self._state.last_observation_at:
-            if (observation.observed_at == self._state.last_observation_at
-                    and observation != self._state.recent_observations[-1]):
+            reasons = ['non_increasing_observation']
+            signals = dict(self._state.signals)
+            previous_sources = self._state.recent_observations[-1].sources()
+            incoming = observation.sources()
+            same_time = observation.observed_at == self._state.last_observation_at
+            for key in previous_sources.keys() | incoming.keys():
+                old = signals.get(key, SignalState())
+                sample = incoming.get(key)
+                if sample and sample.measurement_generation != self._state.measurement_generation:
+                    continue
+                contradiction = (sample and sample.observed_at == old.last_at and sample != old.last_sample)
+                if contradiction or (same_time and sample != previous_sources.get(key)):
+                    # An ambiguous envelope cannot contribute votes. Quarantine
+                    # the affected timestamp even on redelivery in a new envelope.
+                    signals[key] = old.dispute(sample)
+                    reasons.append('conflicting_measurement')
+            if 'conflicting_measurement' in reasons:
+                self._update(signals=signals)
                 self._retire(now)
-                self._reset_pending()
-            return self._decision(now, 'insufficient_telemetry', ['non_increasing_observation'],
-                                  observation_id=observation.observation_id)
+            return self._decision(now, 'insufficient_telemetry', reasons, observation_id=observation.observation_id)
         previous = self._state.recent_observations[-1] if self._state.recent_observations else None
         self._update(last_observation_at=observation.observed_at,
                      recent_observations=[*self._state.recent_observations, observation][-self.config.observation_history_size:])
-        reasons, ready_repairs, ready_links, unknown = [], [], [], []
-        health_values = {}
-        for name in ('reachability', 'ospf'):
-            sample = getattr(observation, name)
-            key = 'health:' + name
-            error = self._freshness(sample.observed_at, now) if sample else 'missing_health'
-            if error or sample.healthy is None:
-                unknown.append(error or 'missing_health')
+        reasons, ready_repairs, ready_links = [], [], []
+        health_values, unknown, signals = {}, {}, {}
+        sources = observation.sources()
+        for key in dict.fromkeys([*sources, *self._state.signals]):
+            sample = sources.get(key)
+            old = self._state.signals.get(key, SignalState())
+            if sample is None:
+                signals[key] = old.interrupted()
+                if key in sources:
+                    unknown[key] = 'missing_health'
                 continue
-            prior = getattr(previous, name, None)
-            if prior and sample.scope_fingerprint != prior.scope_fingerprint:
-                # A failure on another set of peers/pairs starts its own streak.
-                signals = dict(self._state.signals)
-                signals.pop(key, None)
-                self._update(signals=signals)
-            health_values[name] = sample.healthy
-            ready, recovered, error = self._signal(key, sample.observed_at, degraded=not sample.healthy,
-                                                  clear=sample.healthy, samples=self.config.repair_samples,
-                                                  seconds=self.config.repair_seconds)
-            if error:
-                (unknown if error == 'non_increasing_observation' else reasons).append(error)
-            if ready:
-                ready_repairs.append(name)
+            signal, ready, recovered, issue = self._signal(old, sample, now)
+            signals[key] = signal
+            if issue and issue != 'measurement_gap':
+                unknown[key] = issue
+                continue
+            if issue:
+                reasons.append(issue)
+            elif sample.observed_at == old.last_at:
+                reasons.append('non_increasing_observation')
             if recovered:
                 reasons.append('recovery_confirmed')
-        measured_links = set()
-        for link in observation.links:
-            key = 'link:' + link.link_id
-            error = self._freshness(link.observed_at, now)
-            utilization = link.reliable_utilization
-            if error or utilization is None:
-                unknown.append(error or 'missing_utilization')
-                continue
-            measured_links.add(link.link_id)
-            ready, recovered, error = self._signal(key, link.observed_at,
-                                                  degraded=utilization >= self.config.congestion_high,
-                                                  clear=utilization <= self.config.congestion_clear,
-                                                  samples=self.config.congestion_samples,
-                                                  seconds=self.config.congestion_seconds)
-            if error:
-                (unknown if error == 'non_increasing_observation' else reasons).append(error)
-            if ready:
-                ready_links.append(link.link_id)
-            if recovered:
-                reasons.append('recovery_confirmed')
-        # Missing/stale samples reset pending evidence, but cannot clear a latch.
-        valid = {'health:' + name for name in health_values} | {'link:' + name for name in measured_links}
-        self._update(signals={key: value if key in valid else SignalState(latched=value.latched, retry_after=value.retry_after)
-                              for key, value in self._state.signals.items()})
+            if isinstance(sample, HealthMeasurement):
+                name = key.removeprefix('health:')
+                health_values[name] = sample.healthy
+                if ready:
+                    ready_repairs.append(name)
+            elif ready:
+                ready_links.append(sample.link_id)
+        self._update(signals=signals)
         op = self._state.opportunity
         if op:
             invalid = self._unsupported(op, observation, now, previous)
+            required = sources if op.kind == 'optimization' else op.signal_keys
+            if not invalid:
+                invalid = next((unknown[key] for key in required if key in unknown), None)
+            if invalid == 'bystander_threshold_crossing':
+                self._retire(now, backoff=False)
+                return self._decision(now, 'collect_observations', ['opportunity_changed', invalid],
+                                      observation_id=observation.observation_id, opportunity=op,
+                                      links=self._changed_bystanders(op, observation))
             if not invalid:
                 return self._decision(now, 'collect_observations', ['opportunity_pending', 'trigger_latched'],
                                       observation_id=observation.observation_id, links=op.links, opportunity=op)
@@ -617,7 +690,7 @@ class StabilityPolicy:
                                   observation_id=observation.observation_id)
         elif unknown or len(health_values) != 2 or not observation.links:
             return self._decision(now, 'insufficient_telemetry',
-                                  [*reasons, *unknown, *(['missing_utilization'] if not observation.links else [])],
+                                  [*reasons, *unknown.values(), *(['missing_utilization'] if not observation.links else [])],
                                   observation_id=observation.observation_id)
         elif ready_links:
             keys = ['link:' + name for name in ready_links]
@@ -720,8 +793,16 @@ class StabilityPolicy:
         """Record readback evidence, never an assumed effect of a proposal."""
         change = ConfigurationChange.model_validate(change).model_copy(deep=True)
         now = self._now()
-        if not self._check_clock(now) or change.occurred_at > now:
-            raise ValueError('Clock regression or future configuration history')
+        if not self._check_clock(now):
+            raise ValueError('Clock regression')
+        for record in self._state.changes:
+            prior = record.change
+            if change.identity == prior.identity:
+                if change.transition != prior.transition:
+                    raise ValueError('Configuration event ID reused for a different transition')
+                return
+        if change.occurred_at > now:
+            raise ValueError('Future configuration history')
         age = (now - change.occurred_at).total_seconds()
         record = ChangeRecord(change=change, clock_generation=self._state.clock_generation,
                               reversal_until=now + timedelta(seconds=max(0, self.config.reversal_window - age)),
@@ -755,7 +836,7 @@ class StabilityPolicy:
             if outcome.status != 'success' else None,
         })
         deadline = now + timedelta(seconds=duration)
-        self._update(last_clock_at=now, interventions=events,
+        self._update(last_clock_at=now, evidence_after=now, interventions=events,
                      cooldown_until=max(deadline, self._state.cooldown_until or deadline),
                      active=ActiveIntervention(intervention_id=intervention_id, status='rollback_unconfirmed')
                      if outcome.status == 'rollback_unconfirmed' else None,
@@ -791,12 +872,24 @@ class StabilityPolicy:
         events = [InterventionRecord.model_validate({**event.model_dump(),
                   'frequency_until': rebase(event.frequency_until),
                   'unsuccessful_until': rebase(event.unsuccessful_until)}) for event in saved.state.interventions]
-        changes = [ChangeRecord.model_validate({**record.model_dump(),
-                   'reversal_until': rebase(record.reversal_until),
-                   'switching_until': rebase(record.switching_until)}) for record in saved.state.changes]
+        changes = []
+        seen = {}
+        for record in saved.state.changes:
+            # Old format-2 writers appended redeliveries within a generation.
+            # Keep the original safety windows; a retry did not change the network.
+            key = record.change.event_id or (record.clock_generation, record.change.transition)
+            if key in seen:
+                if seen[key] != record.change.transition:
+                    raise ValueError('Conflicting configuration event ID in snapshot')
+                continue
+            seen[key] = record.change.transition
+            changes.append(ChangeRecord.model_validate({**record.model_dump(),
+                           'reversal_until': rebase(record.reversal_until),
+                           'switching_until': rebase(record.switching_until)}))
         policy._state = PolicyState.model_validate({**saved.state.model_dump(),
             'clock_generation': saved.state.clock_generation + 1,
-            'last_clock_at': now, 'last_observation_at': None,
+            'measurement_generation': uuid4().hex,
+            'last_clock_at': now, 'evidence_after': now, 'last_observation_at': None,
             'cooldown_until': rebase(saved.state.cooldown_until), 'interventions': events, 'changes': changes,
             'retry_until': {kind: rebase(at) for kind, at in saved.state.retry_until.items()},
             'signals': {key: SignalState(latched=value.latched, retry_after=rebase(value.retry_after))
