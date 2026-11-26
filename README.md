@@ -134,6 +134,11 @@ excluded from routing-accuracy scores. See the linked guide for paired commands.
 
 ## Visualizer and traffic
 
+The standalone [stability policy](docs/STABILITY_POLICY.md) provides stateful
+repair/optimization timing, cooldowns and configuration-history safeguards for a
+future controller. Its tests and reproducible simulation run entirely offline;
+it performs no deployment, inference or experiment orchestration.
+
 The [traffic and performance guide](docs/TRAFFIC_PERFORMANCE.md) covers
 measurement-only profiles, concurrent UDP trials, automatic stage comparisons,
 and optional Linux-only live validation. Existing benchmark scenarios and
