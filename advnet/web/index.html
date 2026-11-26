@@ -19,8 +19,8 @@
   <section class="metrics" aria-label="Network summary">
     <article><span class="metric-label">Router status</span><div><strong id="router-count">—</strong><span class="metric-unit"> / 11</span></div><p id="router-note">Waiting for observations</p></article>
     <article><span class="metric-label">OSPF backbone</span><div><strong id="link-count">—</strong><span class="metric-unit"> / 14</span></div><p id="link-note">Adjacencies, not physical-link state</p></article>
-    <article><span class="metric-label">Last connectivity check</span><div><strong id="pair-count">—</strong><span class="metric-unit"> / 110</span></div><p id="pair-note">No measurements loaded</p></article>
-    <article><span class="metric-label">Peak observed traffic</span><div><strong id="peak-rate">—</strong><span id="peak-unit" class="metric-unit"> Mbps</span></div><p id="peak-note">Directional interface counters</p></article>
+    <article><span class="metric-label">Last connectivity check</span><div><strong id="pair-count">—</strong><span id="pair-total" class="metric-unit"> / 110</span></div><p id="pair-note">No measurements loaded</p></article>
+    <article><span class="metric-label">Peak link rate</span><div><strong id="peak-rate">—</strong><span id="peak-unit" class="metric-unit"> Mbps</span></div><p id="peak-note">Directional interface counters</p></article>
   </section>
   <section id="decision-monitor" class="panel decision-monitor" aria-label="Live experiment decisions">
     <div class="panel-heading"><div><span class="eyebrow">LIVE EXPERIMENT</span><h2 id="active-trial">Waiting for a trial</h2></div><span id="decision-mode" class="pill muted">NO TRIAL</span></div>
@@ -40,7 +40,7 @@
   <div class="workspace">
     <section class="map-panel panel" aria-labelledby="map-title">
       <div class="panel-heading"><div><span class="eyebrow">INTERNET TOPOLOGY ZOO · 2005_02</span><h2 id="map-title">Abilene backbone</h2></div><div class="map-tools"><label><input type="checkbox" id="animate" checked> Rate animation</label><button id="zoom-out" class="icon-button" aria-label="Zoom out">−</button><button id="zoom-in" class="icon-button" aria-label="Zoom in">+</button><button id="fit" class="icon-button" aria-label="Fit topology">↗</button></div></div>
-      <div class="map-wrap"><svg id="topology" viewBox="0 0 1120 650" role="img" aria-label="Interactive Abilene topology. Select a router or link for details."></svg><div class="map-caption">11 routers <span>·</span> 14 backbone links <span>·</span> 11 test hosts</div></div>
+      <div class="map-wrap"><svg id="topology" viewBox="0 0 1120 650" role="group" aria-label="Interactive Abilene topology. Select a router, host, or link for details."></svg><div class="map-caption">11 routers <span>·</span> 14 backbone links <span>·</span> 11 test hosts</div></div>
       <div class="legend"><span><i class="dot green"></i> OSPF full</span><span><i class="dot amber"></i> Degraded</span><span><i class="dot gray"></i> Unknown</span><span><i class="line cyan"></i> Probed path</span><span class="legend-note">Width = traffic rate. Animation ≠ individual packets.</span></div>
       <div class="flow-controls"><div><span class="eyebrow">FOLLOW A FLOW</span><p>Send an ICMP traceroute between test hosts.</p></div><label class="sr-only" for="flow-source">Source site</label><select id="flow-source"></select><span class="arrow">→</span><label class="sr-only" for="flow-destination">Destination site</label><select id="flow-destination"></select><button id="probe" class="button primary">Probe path <span aria-hidden="true">↗</span></button></div>
       <div id="path-description" class="path-description">No path probe yet. Link counters alone do not establish a packet’s route.</div>

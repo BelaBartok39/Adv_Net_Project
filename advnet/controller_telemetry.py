@@ -13,6 +13,7 @@ class Frame:
     source: str
     signal: NetworkObservation
     model_input: Observation | None = None
+    runtime: dict | None = None
 
 
 class CapacityEvidence(Contract):

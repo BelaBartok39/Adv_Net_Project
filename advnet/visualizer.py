@@ -45,6 +45,65 @@ def recorded_frame(manifest,measurement,configs=None,label='Recorded measurement
             'nodes':nodes,'hosts':hosts,'links':links,'errors':[],'measurement':measurement,'label':label}
 
 
+def apply_controller_health(manifest, frame, check):
+    routers = manifest['routers']
+    failed = {tuple(pair) for pair in check['failed_pairs']
+              if len(pair) == 2 and pair[0] in routers and pair[1] in routers and pair[0] != pair[1]}
+    total = len(routers) - 1
+    frame['measurement'] = {**check, 'pair_total': len(routers) * total,
+                            'pair_passed': len(routers) * total - len(failed), 'source': 'controller'}
+    for node, router in routers.items():
+        outgoing = sum(a == node for a, _ in failed)
+        incoming = sum(b == node for _, b in failed)
+        host = frame.setdefault('hosts', {}).setdefault(router['host'], {})
+        host.update(reachability='unreachable' if total and (incoming == total or outgoing == total)
+                    else 'reachable', reachability_at=check['observed_at'],
+                    failed_pairs=outgoing + incoming, checked_pairs=total * 2)
+
+
+def apply_host_interfaces(manifest, frame):
+    for node, router in manifest['routers'].items():
+        status = frame.get('nodes', {}).get(node, {})
+        config = status.get('config') if status.get('config_at') and not status.get('config_error') else None
+        if not config or status.get('status') != 'running':
+            continue
+        header = 'interface ' + router['host_interface']
+        section = re.search(r'^' + re.escape(header) + r'[ \t]*\n((?:[ \t]+[^\n]*\n?)*)',
+                            config, re.MULTILINE)
+        if section is None:
+            continue
+        disabled = any(line.strip() == 'shutdown' for line in section[1].splitlines())
+        frame.setdefault('hosts', {}).setdefault(router['host'], {}).update(
+            attachment='admin_down' if disabled else 'enabled', attachment_at=status['config_at'])
+
+
+def continuous_frame(manifest, checkpoint):
+    check = checkpoint['measurement']
+    frame = recorded_frame(manifest, check, label=checkpoint['label'])
+    apply_controller_health(manifest, frame, check)
+    mismatches = check.get('mismatched_ospf')
+    if isinstance(mismatches, list) or check.get('ospf_healthy') is True:
+        missing = {name: set(peers) for name, peers, _ in mismatches or []}
+        unexpected = {name: set(peers) for name, _, peers in mismatches or []}
+        for link in frame['links']:
+            full = True
+            for a, b in ((link['a'], link['b']), (link['b'], link['a'])):
+                peer = manifest['routers'][b]['router_id']
+                if peer in missing.get(a, ()):
+                    full = False
+                else:
+                    frame['nodes'][a]['full_neighbors'].append(peer)
+            link['state'] = 'up' if full else 'degraded'
+        for name, peers in unexpected.items():
+            if name in frame['nodes']:
+                frame['nodes'][name]['full_neighbors'].extend(sorted(peers))
+    for link in frame['links']:
+        for side in ('a', 'b'):
+            key = f'{link[side]}:{link[side + "_interface"]}'
+            link[side+'_mbps'] = check['port_rates'].get(key)
+    return frame
+
+
 class Demo:
     def __init__(self,manifest,configs):
         self.manifest,self.configs=manifest,configs
@@ -207,7 +266,7 @@ class App:
                 relay=copy.deepcopy(self.relay_state)
                 frame=relay.get('frame',frame)
         if experiment is None:
-            latest=next((r for r in runs if r['kind']=='experiment'),None)
+            latest=next((r for r in runs if r['kind'] in ('experiment','continuous')),None)
             if latest:
                 experiment=self.artifacts.experiment(latest['id'])
         campaign=None
@@ -218,7 +277,13 @@ class App:
             if experiment.get('frames'):
                 checkpoint=experiment['frames'][-1]
                 check=checkpoint['measurement']
-                if self.mode=='files':
+                if experiment.get('kind') == 'continuous':
+                    if self.mode == 'files':
+                        frame = continuous_frame(self.manifest, checkpoint)
+                    else:
+                        apply_controller_health(self.manifest, frame, check)
+                    check = frame['measurement']
+                elif self.mode=='files':
                     from .visualizer_data import read_json
                     root=self.artifacts.run(experiment['id'])
                     configs=read_json(self.artifacts.safe(root/('impaired-configs.json' if checkpoint['label']=='Injected impairment' else 'healthy-configs.json')))
@@ -226,6 +291,8 @@ class App:
                         attempt=next((a for a in experiment['attempts'] if a['id']==checkpoint['attempt']),None)
                         configs=attempt['candidate_configs'] if attempt else None
                     frame=recorded_frame(self.manifest,check,configs,checkpoint['label'])
+        if self.mode in ('live', 'relay'):
+            apply_host_interfaces(self.manifest, frame)
         return {'mode':self.mode,'frame':frame,'runs':runs,'last_check':check,'experiment':experiment,
                 'campaign':campaign,'observer_port':self.observer_port,
                 'path':relay.get('path') if self.mode=='relay' else self.last_path,
@@ -288,7 +355,10 @@ class App:
                 frames.append(f)
             return {'id':'demo','kind':'telemetry','frames':frames,'paths':[]}
         value=self.artifacts.replay(name)
-        if value['kind']=='experiment':
+        if value['kind'] == 'continuous':
+            for frame in value['frames']:
+                frame['telemetry'] = continuous_frame(self.manifest, frame)
+        elif value['kind']=='experiment':
             root=self.artifacts.run(name)
             from .visualizer_data import read_json
             healthy=read_json(self.artifacts.safe(root/'healthy-configs.json'))

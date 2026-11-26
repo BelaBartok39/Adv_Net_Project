@@ -132,6 +132,20 @@ budgets, and toggle `--system-one off|jev`. `--force-escalation` is an explicitl
 labelled overhead control that calls Jev before forcing LLM fallback; it is
 excluded from routing-accuracy scores. See the linked guide for paired commands.
 
+## Continuous repair and optimization
+
+The live controller runs for a selected duration on a deployed Linux Abilene lab.
+
+```bash
+sudo --preserve-env=OPEN_ROUTER_KEY,LLM_MODEL,LLM_BASE_URL,BATFISH_HOST,SYSONE_MODEL \
+  .venv/bin/python -m advnet.controller run --duration 20m --system-one jev \
+  --workload experiments/continuous/sea-sva.json
+```
+
+Use `--observe-only` for a matched run with the same traffic and no controller
+interventions. The [continuous mode guide](docs/PERSISTENT_CONTROLLER.md#run-live-on-abilene)
+covers shaping setup, a short smoke test, runtime evidence, and checkpoint recovery.
+
 ## Visualizer and traffic
 
 The standalone [stability policy](docs/STABILITY_POLICY.md) provides stateful

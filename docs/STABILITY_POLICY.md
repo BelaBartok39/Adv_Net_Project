@@ -131,6 +131,13 @@ OSPF-only repairs cannot. Disable this through
 active intervention, unconfirmed rollback, frequency limits, candidate history
 checks, verification, checkpoint validation or runtime acceptance requirements.
 The exception produces `urgent_repair_cooldown_exception` in the trigger decision.
+
+The live controller confirms an external configuration change before evaluating
+the next observation. When a fresh repair proposal exactly restores the state
+before the latest external change, that change alone is excluded from the
+reversal and switching checks. Earlier history and controller-originated
+transitions still count. The repair must pass Batfish and live acceptance.
+
 Recording any intervention outcome establishes an exclusive lower bound on each
 inner measurement timestamp. For a completion at 100 s, failures measured at
 90 s, 95 s or 100 s cannot justify a new repair. Distinct failures measured at

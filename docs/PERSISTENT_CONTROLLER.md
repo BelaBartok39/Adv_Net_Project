@@ -8,6 +8,90 @@ The offline entry point runs on a laptop. Choose a new output directory.
 .venv/bin/python -m advnet.controller_demo --output /tmp/comp7311-controller-demo
 ```
 
+## Run live on Abilene
+
+Start the lab and Batfish using the README. Run the controller from the repository
+root on the Linux Docker host. The collector uses `nsenter` and `tc` from the
+host and needs permission to open sockets in the lab host network namespaces.
+Use the same OpenRouter and Batfish environment as for a bounded trial.
+
+Start with a 30-second observation-only run.
+
+```bash
+sudo .venv/bin/python -m advnet.controller run --observe-only --duration 30s
+```
+
+For traffic experiments, establish TBF shaping on an otherwise idle lab. The
+following uses the bounded harness's 100 Mbps default on each backbone link.
+Run it before the controller and schedule. This deliberately replaces the
+existing backbone qdiscs.
+
+```bash
+sudo .venv/bin/python -c 'import json; from advnet.lab import Deadline, Lab; Lab(json.load(open("topologies/abilene.json"))).shape({}, Deadline(120))'
+```
+
+The included workload runs for 20 minutes.
+
+```bash
+sudo --preserve-env=OPEN_ROUTER_KEY,LLM_MODEL,LLM_BASE_URL,BATFISH_HOST,SYSONE_MODEL \
+  .venv/bin/python -m advnet.controller run --duration 20m --system-one jev \
+  --workload experiments/continuous/sea-sva.json
+```
+
+- Choose `--system-one off` for LLM-only or `--observe-only` for a control arm
+  that generates and measures the same traffic with inference and config
+  deployment disabled. Start matched arms from the same lab config and shaping.
+- The workload raises aggregate Seattle demand twice, with several minutes per
+  plateau. Check the recorded maximum directed-link utilization and every
+  receiver's delivery before and after an intervention. A quiet interval or
+  an epoch transition cannot certify an optimization.
+- Omit `--workload` for a repair-only run on a lab with no external data traffic.
+  To exercise self-healing, wait for monitoring to start, inject a controlled
+  Abilene fault from a separate terminal and record its wall-clock time. The
+  first failed observation, policy permit, decision, and runtime outcome are
+  timestamped independently. The launcher starts from a healthy reference and
+  leaves accepted router changes in place.
+- `--duration` accepts seconds or `s`, `m`, and `h` suffixes. The timed phase
+  starts after preflight and calibration. The deadline or Ctrl+C ends the
+  observation phase. A possible write gets its separate rollback budget and
+  the launcher stops its traffic before releasing the lab lock.
+- The default cadence is 10 seconds with six-second traffic windows. The
+  connectivity sweep uses four workers and one ping per directed host pair.
+  This limits simultaneous probe traffic while allowing failed pairs to time
+  out during the window. The run records the worker count with its settings.
+  Start a fresh output directory when changing the probe protocol so its
+  healthy references use the same protocol as live validation. Allow
+  enough time in each workload plateau for sustained detection, inference,
+  Batfish, OSPF convergence, and both acceptance windows. Short plateaus can
+  contribute telemetry without leaving enough time to validate a repair or
+  optimization.
+
+The launcher runs the existing schedule in the background under the same lab
+lock as the controller. Dedicated, paced UDP sockets count matched packet
+sequences at the receiver while traffic is active. Keep other data generators
+and experiment runners off this lab during the run. The standalone iperf3
+runner continues to use its own CLI. The collector checks the measured
+sender rate, scopes health to the full directed host matrix and expected OSPF
+adjacencies, and computes utilization from Linux interface counters and the
+observed directional TBF rate.
+
+Preflight records a healthy reference for each distinct workload composition
+and rate. Live acceptance compares windows under that same demand and requires
+an unchanged demand epoch and TBF fingerprint across the before/after pair.
+For optimization, the before window must meet the policy's congestion
+threshold and measured maximum utilization must fall by at least 5%, with
+per-flow delivery and loss guardrails. This also allows pressure from a change
+in offered demand at constant link capacity.
+
+Inspect `events.jsonl` for timestamped observations, per-flow receiver
+measurements, and decisions and outcomes. Each `sessions/<id>/` contains the
+session summary and, for traffic runs, the schedule's clock origin and
+execution log. Use `--output <dir> --resume` with the original manifest,
+workload, and controller settings to reconcile a saved controller journal.
+The new session starts its own workload timeline. Per-session sample totals
+refer to that session, and outcome totals refer to the restored controller
+history.
+
 ## Architecture
 
 ```mermaid
@@ -56,7 +140,7 @@ controller = PersistentController(
 controller.run()
 ```
 
-The example requires site-supplied `collect_frame` and `read_runtime_window`. The branch supplies the monitor-format conversion, execution adapter, offline providers and demonstration. A turnkey Abilene passive evidence producer and live launcher are outstanding integration work.
+The example accepts custom `collect_frame` and `read_runtime_window` functions. The live Abilene launcher supplies both through `LiveCollector`.
 
 ### Telemetry
 
@@ -90,11 +174,11 @@ An episode groups attempts by impairment kind, affected signal keys and health s
 
 `windows(phase, kind, deadline)` returns a validated `RuntimeWindow` for `healthy`, `before` or `after`. All three need matching source, network scope, measurement duration, traffic scope and demand identity. The healthy baseline must match the verified baseline configuration. The before/after windows must match their configuration hashes, satisfy freshness checks and share a demand epoch. The producer must establish workload composition and rates over each whole window and change the epoch on every demand transition, including a change followed by a return to the original rate. A constant experiment ID cannot supply that evidence.
 
-An active-traffic baseline must show positive receiver delivery for every reference flow. Single-flow acceptance uses measured receiver Mbps, loss and maximum link utilization. Concurrent acceptance checks measured sender overlap, matched per-flow profiles and receivers. Traffic-free repair requires explicit confirmed idle evidence. Optimization always requires measured traffic. The controller never calls the traffic generator, iperf, baseline reset or fault injector. Incomparable evidence before deployment causes rejection. Incomparable evidence after deployment causes rollback.
+An active-traffic baseline must show positive receiver delivery for every reference flow. Single-flow acceptance uses measured receiver Mbps, loss and maximum link utilization. Concurrent acceptance checks measured sender overlap, matched per-flow profiles and receivers. Traffic-free repair requires explicit confirmed idle evidence. Optimization always requires measured traffic. The live launcher owns workload execution, and the executor consumes the resulting measurements. Incomparable evidence before deployment causes rejection. Incomparable evidence after deployment causes rollback.
 
 ### Persistence and evidence
 
-Reuse the same private output directory when restarting a run. The controller stores a versioned policy snapshot, phase, mutation marker, episode history and binding to network scope, mode and evidence source. Each snapshot uses a temporary file, fsync and atomic replacement. Missing state in an occupied directory, corrupt state or an incompatible binding stops startup. A file lock excludes another owner of the same journal. Live runs also acquire the existing exclusive Abilene experiment lock. Running the existing standalone traffic command simultaneously requires future coordination of lab ownership.
+Reuse the same private output directory when restarting a run. The controller stores a versioned policy snapshot, phase, mutation marker, episode history and binding to network scope, mode and evidence source. Each snapshot uses a temporary file, fsync and atomic replacement. Missing state in an occupied directory, corrupt state or an incompatible binding stops startup. A file lock excludes another owner of the same journal. The live launcher holds the existing Abilene experiment lock for its calibration, monitoring, and managed traffic.
 
 On restart, `StabilityPolicy.restore()` retires an in-flight opportunity and preserves cooldowns and the active slot. An unfinished attempt requires current full readback matching its saved pre-change fingerprint. A confirmed unchanged pre-deployment attempt is recorded as failed. A checkpoint confirmed after a possible write resolves the rollback hold. A running candidate or unknown configuration remains blocked. Monitoring continues. Reconcile the network externally and restart the same journal to retry readback. A persistence failure propagates and leaves a held reservation available for reconciliation.
 
@@ -116,10 +200,12 @@ RUN_BATFISH_INTEGRATION=0 RUN_TRAFFIC_INTEGRATION=0 RUN_DYNAMIC_TRAFFIC_INTEGRAT
 git diff --check
 ```
 
-The complete offline suite ran 461 tests with 454 passes and seven skips. The controller subset passed all 41 tests, the stability subset passed all 89, and the dynamic subset passed 127 with one live skip. Five full-suite skips require live integrations and two require optional SDKs. Compilation and all 30 offline scenario validations passed.
-
 The controller tests exercise the real policy and execution state machine, process isolation, cancellation, duplicate suppression, configuration drift, partial writes, failed storage, shutdown and restart. Batfish verdicts, router operations, SDK responses and traffic measurements in those tests are synthetic.
 
-Nick's live validation should establish collector latency and timestamp alignment, effective shaping capacity over each sample window, workload epoch provenance and comparable receiver windows. Check full EOS readback normalization against materialized candidates, the real Batfish/path-policy result, convergence time, checkpoint restoration after a partial write and restart with an uncertain configuration. Strict readback equality can conservatively block when EOS reformats a configuration. Blocking I/O collectors and transports must honor their deadlines. Validate exclusive lab ownership before combining the controller and traffic scheduler in a future phase.
+The optional receiver test uses real UDP over Linux loopback. The cEOS smoke
+test should also confirm the live collector cadence, router readback, Batfish
+verdict, and checkpoint restoration on the actual topology.
 
-The branch starts at `19ca772006b654ffa1ad5ea65829716b430daaba`, the main merge of PR #7. Its ancestry already includes PR #6 and stability-policy commit `9483fd6`. It can be reviewed directly against main.
+```bash
+RUN_CONTROLLER_SOCKET_TEST=1 .venv/bin/python -m unittest discover -s tests -p 'test_live_controller.py' -v
+```

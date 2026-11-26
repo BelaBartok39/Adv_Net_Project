@@ -10,6 +10,7 @@ from unittest.mock import patch
 from advnet.controller_demo import DemoDecision, ScheduledReply, demo_controller
 from advnet.controller_execution import fingerprint
 from advnet.controller_telemetry import CapacityEvidence, monitor_frame
+from advnet.eos import normalize_readback
 from advnet.persistent_controller import EngineProvider, InferenceJob, Journal
 from advnet.providers import MockJev, MockLLM
 from advnet.stability_policy import HealthMeasurement
@@ -131,6 +132,37 @@ class PersistentControllerTests(unittest.TestCase):
         self.assertEqual(self.events('inference_discarded')[0]['reason'], 'inference_timeout')
         self.assertFalse(self.net.writes)
         self.assertIsNone(self.c.pending)
+
+    def test_reply_ready_before_subtick_timeout_waits_for_fresh_observation(self):
+        clock = self.c.clock
+
+        class PromptReply(ScheduledReply):
+            def __init__(self, *args):
+                super().__init__(*args)
+                self.ready_at = clock.monotonic() + 0.2
+
+            def poll(self):
+                if clock.monotonic() < self.ready_at:
+                    return None
+                self.ticks = 1
+                return super().poll()
+
+        self.c.settings.inference_timeout = 0.4
+        self.c.worker = PromptReply
+        self.c.run()
+        self.assertFalse(self.events('inference_discarded'))
+        self.assertEqual(self.outcomes(), ['success'])
+        observations = self.events('observation')
+        result = self.events('decision_result')[0]
+        self.assertTrue(any(row['at'] == result['at'] for row in observations))
+
+    def test_observe_only_preserves_observations_without_dispatch(self):
+        self.c.settings.observe_only = True
+        self.c.run()
+        self.assertEqual(len(self.events('observation')), 12)
+        self.assertEqual(self.events('inference_skipped')[0]['reason'], 'observe_only')
+        self.assertFalse(self.events('decision_result'))
+        self.assertFalse(self.net.writes)
 
     def test_decision_exception_and_episode_retry_bound(self):
         self.c.settings.duration = 30
@@ -279,6 +311,48 @@ class PersistentControllerTests(unittest.TestCase):
         self.c.run()
         self.assertEqual(self.outcomes(), ['success'])
         self.assertTrue(any('recent_reversal' in e['decision']['reasons'] for e in self.events('policy')))
+
+    def test_repair_can_restore_state_after_external_fault_following_optimization_rollback(self):
+        self.net.load = lambda t: .95 if t < 6 else .4
+        self.net.behavior = lambda t: 'rollback' if t < 10 else 'success'
+        self.c.settings.duration = 28
+        injected = False
+
+        def sample(generation, limit):
+            nonlocal injected
+            if self.c.clock.seconds >= 13 and not injected:
+                self.net.config['r1'] += '   shutdown\n'
+                injected = True
+            frame = self.net.sample(generation, limit)
+            if '   shutdown\n' in self.net.config['r1']:
+                reach = frame.signal.reachability.model_copy(update={'healthy': False})
+                frame.signal = frame.signal.model_copy(update={'reachability': reach})
+            return frame
+
+        def decide(mode, observation, feedback, attempt):
+            result = DemoDecision()(mode, observation, feedback, attempt)
+            if observation.measurements['stability_policy']['kind'] == 'repair':
+                result['proposal']['changes'] = [{'device': 'r1', 'interface': 'Ethernet1',
+                                                  'action': 'set_interface_enabled', 'value': True}]
+            return result
+
+        def windows(phase, kind, limit):
+            value = self.net.window(phase, kind, limit)
+            if kind == 'repair':
+                return value.model_copy(update={'all_reachable': phase != 'before', 'traffic': None,
+                                                'traffic_scope': 'confirmed_idle',
+                                                'config_sha256': self.c.executor.config_id(
+                                                    self.net.initial if phase == 'healthy' else self.net.config)})
+            return value
+
+        self.c.executor.normalize = normalize_readback
+        self.c.telemetry, self.c.decision, self.c.executor.windows = sample, decide, windows
+        self.c.run()
+        self.assertEqual(self.outcomes(), ['rolled_back', 'success'])
+        self.assertEqual(self.c.policy.state.interventions[-1].kind, 'repair')
+        self.assertEqual(normalize_readback(self.net.config), normalize_readback(self.net.initial))
+        self.assertEqual([entry.change.origin for entry in self.c.policy.state.changes],
+                         ['controller', 'controller', 'external', 'controller'])
 
     def test_telemetry_exception_during_inference_retires_token(self):
         def sample(generation, deadline):

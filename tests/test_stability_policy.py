@@ -69,11 +69,11 @@ class StabilityPolicyTests(unittest.TestCase):
         self.assertFalse(decision.deployment_authorized)
         return decision
 
-    def change(self, at, before, after, scope='network-config'):
+    def change(self, at, before, after, scope='network-config', *, origin='unknown'):
         self.clock.seconds = at
         self.policy.record_configuration_change(ConfigurationChange(
             occurred_at=self.clock(), before_state=before, after_state=after,
-            scope=scope, evidence='SYNTHETIC configuration readback'))
+            scope=scope, evidence='SYNTHETIC configuration readback', origin=origin))
 
     def test_healthy(self):
         for at in (0, 10, 20, 100):
@@ -321,6 +321,20 @@ class StabilityPolicyTests(unittest.TestCase):
         self.evaluate(50, 0.4)
         self.ready(100)
         self.assertIn('proposal_eligible', self.policy.assess_proposal(action('B', 'A'), 'optimization', opportunity_id=self.request_id).reasons)
+
+    def test_external_restoration_exception_requires_a_repair_and_external_origin(self):
+        for kind, origin in (('optimization', 'external'), ('repair', 'controller')):
+            with self.subTest(kind=kind, origin=origin):
+                self.policy = StabilityPolicy(clock=self.clock)
+                self.change(0, 'A', 'B', origin=origin)
+                if kind == 'optimization':
+                    self.ready(10)
+                else:
+                    self.evaluate(10, reachable=False)
+                    self.evaluate(20, reachable=False)
+                decision = self.policy.assess_proposal(action('B', 'A'), kind,
+                                                       opportunity_id=self.request_id)
+                self.assertIn('recent_reversal', decision.reasons)
 
     def test_repeated_state_switching_uses_real_history(self):
         self.change(0, 'A', 'B')
