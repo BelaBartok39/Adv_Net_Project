@@ -174,6 +174,24 @@ class PersistentControllerTests(unittest.TestCase):
         self.assertNotIn('secret-provider-payload', (self.directory/'events.jsonl').read_text())
         self.assertFalse(self.net.writes)
 
+    def test_completion_failure_diagnostics_reach_journal_without_deployment(self):
+        def truncated(*args):
+            return {'status': 'decision_error', 'proposal': None, 'calls': [
+                {'stage': 'llm', 'model': 'example/model', 'elapsed_ms': 500,
+                 'usage': {'prompt_tokens': 100, 'completion_tokens': 4096, 'cost': .06},
+                 'metadata': {'provider': 'Wafer', 'finish_reason': 'length'},
+                 'error_type': 'ProviderResponseError'}],
+                'error_stage': 'provider_response', 'error_type': 'ProviderResponseError',
+                'provider_error_code': 'output_token_limit'}
+        self.c.decision = truncated
+        self.c.run()
+        event = self.events('decision_result')[0]
+        self.assertEqual(event['provider_error_code'], 'output_token_limit')
+        self.assertEqual(event['error_stage'], 'provider_response')
+        self.assertEqual(event['calls'][0]['metadata']['provider'], 'Wafer')
+        self.assertEqual(event['metrics']['llm_cost_usd'], .06)
+        self.assertFalse(self.net.writes)
+
     def test_previous_rejection_scopes_feedback_to_same_episode(self):
         self.c.settings.duration = 23
         self.net.behavior = lambda t: 'reject' if t < 7 else 'success'
@@ -832,7 +850,7 @@ class PersistentControllerTests(unittest.TestCase):
                 time.sleep(.02)
             self.assertEqual(result['metrics']['jev_calls'], 1)
             self.assertEqual(result['proposal']['changes'][0]['action'], 'set_ospf_cost')
-            self.assertNotIn('raw', json.dumps(result))
+            self.assertNotIn('"raw":', json.dumps(result))
         finally:
             job.close()
 

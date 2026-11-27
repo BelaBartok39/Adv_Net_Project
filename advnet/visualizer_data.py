@@ -55,7 +55,9 @@ def _decision(row):
         if metrics.get(f'{stage}_calls') == 1:
             call['usage'] = {key: metrics.get(f'{stage}_{key}')
                              for key in ('input_tokens', 'output_tokens', 'cost_usd')}
-    return {'status': row.get('status'), 'error_type': row.get('error_type'), 'calls': calls,
+    return {'status': row.get('status'), 'error_type': row.get('error_type'),
+            'error_stage': row.get('error_stage'), 'provider_error_code': row.get('provider_error_code'),
+            'http_status': row.get('http_status'), 'validation_error_types': row.get('validation_error_types'), 'calls': calls,
             'screening': {'selected': row.get('selected_action') or route,
                           'effective_route': route, 'selected_probability': row.get('selected_probability')},
             'threshold': row.get('threshold')}

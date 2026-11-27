@@ -286,10 +286,18 @@ def main(argv=None):
     cli.add_argument('--arm', choices=['validate', 'observe', 'jev', 'llm'], required=True)
     cli.add_argument('--output', type=Path, required=True)
     cli.add_argument('--delay-ms', type=int, default=200, metavar='100..300')
+    cli.add_argument('--fault-hold', type=controller.duration, default=180,
+                     help='Delay hold time in timed arms, e.g. 3m or 5m (default: 3m)')
     cli.add_argument('--match', type=Path, help='Require the same protocol and initial lab state as this plan.json')
+    controller.add_llm_options(cli)
     args = cli.parse_args(argv)
+    controller.validate_llm_options(args, cli)
     if not 100 <= args.delay_ms <= 300:
         cli.error('--delay-ms must be from 100 to 300')
+    duration_seconds = 60 + args.fault_hold + 120
+    if duration_seconds > 86400:
+        cli.error('Fault hold plus the 60s baseline and 120s post-fault period must fit within 24h')
+    duration_seconds = int(duration_seconds) if duration_seconds == int(duration_seconds) else duration_seconds
     if args.arm in ('jev', 'llm') and (not os.environ.get('OPEN_ROUTER_KEY') or not os.environ.get('LLM_MODEL')
                                       or (args.arm == 'jev' and not os.environ.get('SYSONE_MODEL'))):
         cli.error('Export OPEN_ROUTER_KEY, LLM_MODEL and, for Jev, SYSONE_MODEL before starting')
@@ -297,24 +305,27 @@ def main(argv=None):
     manifest = json.loads((ROOT / 'topologies/abilene.json').read_text())
     lab, clock = Lab(manifest), Clock()
     original = None
-    summary = {'arm': args.arm, 'delay_ms': args.delay_ms, 'duration_seconds': 360,
-               'fault_after_seconds': 60, 'fault_hold_seconds': 180,
+    summary = {'arm': args.arm, 'delay_ms': args.delay_ms, 'duration_seconds': duration_seconds,
+               'fault_after_seconds': 60, 'fault_hold_seconds': args.fault_hold,
                'scope': 'Known setup split; natural decisions in timed arms',
                'status': 'failed', 'configs_restored': False, 'shaping_unchanged': False,
                'fault_cleared': False}
     plan = {**summary, 'manifest_sha256': fingerprint(manifest),
-            'workload_sha256': fingerprint(workload(360)), 'source_sha256': {
+            'llm_request_settings': {'openrouter_provider': args.openrouter_provider,
+                                     'max_output_tokens': args.max_output_tokens,
+                                     'llm_evidence': args.llm_evidence},
+            'workload_sha256': fingerprint(workload(duration_seconds)), 'source_sha256': {
                 str(p.relative_to(ROOT)): sha256(p.read_bytes()).hexdigest()
                 for p in sorted((ROOT / 'advnet').glob('*.py'))}}
     matching = json.loads(args.match.read_text()) if args.match else None
     if matching is not None:
         for key in ('source_sha256', 'manifest_sha256', 'workload_sha256', 'delay_ms',
-                    'duration_seconds', 'fault_after_seconds', 'fault_hold_seconds'):
+                    'duration_seconds', 'fault_after_seconds', 'fault_hold_seconds', 'llm_request_settings'):
             if matching.get(key) != plan[key]:
                 cli.error('Matched protocol differs: ' + key + '. Prepare a separate comparison.')
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
     atomic_json(root / 'plan.json', plan)
-    atomic_json(root / 'workload.json', workload(360))
+    atomic_json(root / 'workload.json', workload(duration_seconds))
     try:
         with _lab_lock(LOCK_PATH):
             original = lab.configs(Deadline(60))
@@ -336,12 +347,15 @@ def main(argv=None):
                 if args.arm == 'validate':
                     summary.update(validate(lab, ns, root, manifest, reference, args.delay_ms, clock))
         if args.arm != 'validate':
-            command_line = ['run', '--duration', '6m', '--system-one', 'jev' if args.arm == 'jev' else 'off',
-                            '--workload', str(root / 'workload.json'), '--output', str(root / 'trials' / 'controller')]
+            command_line = ['run', '--duration', str(duration_seconds) + 's', '--system-one', 'jev' if args.arm == 'jev' else 'off',
+                            '--workload', str(root / 'workload.json'), '--output', str(root / 'trials' / 'controller'),
+                            '--max-output-tokens', str(args.max_output_tokens), '--llm-evidence', args.llm_evidence]
+            if args.openrouter_provider:
+                command_line += ['--openrouter-provider', args.openrouter_provider]
             if args.arm == 'observe':
                 command_line.append('--observe-only')
             result = controller.main(command_line, session_hook=lambda owner, collector, ns:
-                                     fault_session(root, args.delay_ms, 60, 180, owner, collector, ns))
+                                     fault_session(root, args.delay_ms, 60, args.fault_hold, owner, collector, ns))
             if result:
                 raise RuntimeError('Controller exited ' + str(result))
             summary.update(timed_results(root))

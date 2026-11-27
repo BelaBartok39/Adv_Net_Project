@@ -98,6 +98,57 @@ an unconfirmed cleanup must be investigated before another run. The injected
 delay needs no manual fault command. The visualizer can follow the controller at
 `<experiment>/trials/controller`.
 
+To allow more time for observation requests, rollback cooldown and another
+repair attempt, pass `--fault-hold 5m` to **both** timed arms. The harness keeps
+the one-minute pre-fault period and two-minute post-removal period, extending
+each arm to eight timed minutes and extending the constant workload to match.
+Traffic rates, 70 Mbps shaping and the delay magnitude are unaffected. The
+default hold remains three minutes. `--match` also compares the hold time and
+workload duration, so a five-minute arm requires a fresh five-minute control.
+
+For controlled provider comparisons, both `advnet.controller run` and
+`advnet.recovery_experiment` accept `--openrouter-provider <provider-slug>`
+(environment: `OPENROUTER_PROVIDER`). This sends OpenRouter's `provider.only`,
+disables provider fallback and requires support for all supplied parameters.
+Without it, OpenRouter chooses the provider. Use the slug published by
+[OpenRouter](https://openrouter.ai/docs/guides/routing/provider-selection),
+including an endpoint suffix when a specific endpoint is required.
+`--max-output-tokens` (environment: `LLM_MAX_OUTPUT_TOKENS`) controls the response
+budget; the default remains 4096. Preserve these environment variables through
+sudo when using them. The run binding records both settings, and `--match`
+requires them to agree. Changed settings require a fresh comparison.
+
+Decision artifacts and journal events retain safe failure stages (request,
+completion, proposal parsing or scope validation), known provider error codes,
+HTTP status, schema error types, and provider/generation/finish identifiers when
+returned. A truncated or empty completion remains rejected while retaining its
+reported usage and cost. Raw response and reasoning text are discarded.
+These diagnostics apply to new runs; historical missing metadata cannot be
+reconstructed from these changes. To isolate provider effects, hold the output
+budget fixed when changing provider, then study a larger budget separately.
+
+For evidence-presentation diagnostics, `--llm-evidence path-summary` appends a
+deterministic summary to the LLM input while retaining the full original input.
+The default `raw` mode does not append it. Jev receives the same original
+evidence in both modes. The summary contains explicit directional backbone
+costs and the 12 largest measured host-pair RTTs, with forward and return
+router-path estimates, retaining up to four equal-cost alternatives per direction.
+Costs and paths are derived only from the current topology and configurations;
+RTTs and the aggregate acceptance limit come from existing measurements.
+The summary supplies no fault label, reference repair, recommended change, or
+additional live query. It does not change guardrails or observation budgets.
+
+These are advisory single-area OSPF path estimates, not measured forwarding
+paths or Batfish results; host attachment costs and flow hashing are not modeled.
+Incomplete explicit costs, unhealthy reachability/adjacencies or unsupported
+topology yield an unavailable summary, with the original evidence retained.
+Decision artifacts preserve the derived summary, evidence mode and serialized
+LLM state digest (the system prompt is tracked separately by prompt version).
+The run binding and matched-control checks include evidence mode.
+This tests structured augmentation, not prompt shortening: token count and
+inference cost can increase. Repeat successful comparisons with reversed order
+before attributing an effect to the summary.
+
 Cleanup reapplies the same TBF settings after deleting its netem child to
 restore normal queuing. Deleting the child alone installs a dropping queue in
 the [kernel TBF implementation](https://github.com/torvalds/linux/blob/master/net/sched/sch_tbf.c).

@@ -21,6 +21,8 @@ from .contracts import Contract, Feedback, Observation, Proposal, SUPPORTED_OBSE
 from .controller_execution import EvidenceFailure, fingerprint, outcome
 from .metrics import inference_metrics
 from .pipeline import DecisionEngine
+from .providers import safe_reply_metadata
+from .evidence_summary import path_summary
 from .stability_policy import ConfigurationChange, StabilityPolicy
 from .trial import acceptance_limits
 
@@ -115,12 +117,13 @@ class EngineProvider:
     screener: object = None
     catalog: dict | None = None
     threshold: float = 0.9
+    llm_evidence: str = 'raw'
 
     def __call__(self, mode, observation, feedback, attempt):
         if mode == 'jev_llm' and self.screener is None:
             raise ValueError('Jev mode requires a screener')
         engine = DecisionEngine(self.screener if mode == 'jev_llm' else None,
-                                self.llm, self.catalog or {}, self.threshold)
+                                self.llm, self.catalog or {}, self.threshold, llm_evidence=self.llm_evidence)
         return engine.decide(observation, feedback, attempt)
 
 
@@ -135,12 +138,38 @@ def _infer(provider, args, destination, *, timed=False):
                     metrics=inference_metrics(result['calls']),
                     route=result.get('screening', {}).get('effective_route'),
                     elapsed_ms=result.get('elapsed_ms'), proposal=None)
+        for key in ('error_type', 'provider_error_code'):
+            value = result.get(key)
+            if isinstance(value, str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,63}', value):
+                data[key] = value
+        if result.get('error_stage') in ('provider_request', 'provider_response', 'proposal_parsing', 'scope_validation'):
+            data['error_stage'] = result['error_stage']
+        if type(result.get('http_status')) is int and 400 <= result['http_status'] <= 599:
+            data['http_status'] = result['http_status']
+        if isinstance(result.get('validation_error_types'), list):
+            data['validation_error_types'] = [v for v in result['validation_error_types'][:16]
+                                             if isinstance(v, str) and re.fullmatch(r'[a-z_]{1,64}', v)]
         data['calls'] = []
+        if result.get('llm_evidence') in ('raw', 'path-summary'):
+            data['llm_evidence'] = result['llm_evidence']
+            digest = result.get('llm_input_sha256')
+            if isinstance(digest, str) and re.fullmatch(r'[a-f0-9]{64}', digest):
+                data['llm_input_sha256'] = digest
+            if data['llm_evidence'] == 'path-summary' and isinstance(args[1], Observation):
+                # Recompute from the scoped input instead of copying arbitrary
+                # provider fields into the otherwise sanitized artifact.
+                data['evidence_summary'] = path_summary(args[1].model_dump(mode='json'))
         for call in result['calls']:
             model = call.get('model')
             data['calls'].append(dict(stage=call['stage'], elapsed_ms=call.get('elapsed_ms'),
                                       model=model if isinstance(model, str) and re.fullmatch(r'[\w./:+-]{1,128}', model)
                                       else None))
+            metadata = safe_reply_metadata(call.get('metadata') or {})
+            if metadata:
+                data['calls'][-1]['metadata'] = metadata
+            error_type = call.get('error_type')
+            if isinstance(error_type, str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,63}', error_type):
+                data['calls'][-1]['error_type'] = error_type
         data['threshold'] = result.get('threshold')
         data['selected_probability'] = result.get('screening', {}).get('selected_probability')
         if data['route'] not in ('no_change', 'escalate'):
@@ -463,7 +492,10 @@ class PersistentController:
                    elapsed_seconds=self.clock.monotonic()-pending.started,
                    status=result['status'], metrics=result.get('metrics'), calls=result.get('calls'), route=result.get('route'),
                    threshold=result.get('threshold'), selected_probability=result.get('selected_probability'),
-                   model_ms=result.get('elapsed_ms'), error_type=result.get('error_type'))
+                   model_ms=result.get('elapsed_ms'), error_type=result.get('error_type'),
+                   llm_evidence=result.get('llm_evidence'), llm_input_sha256=result.get('llm_input_sha256'),
+                   error_stage=result.get('error_stage'), provider_error_code=result.get('provider_error_code'),
+                   http_status=result.get('http_status'), validation_error_types=result.get('validation_error_types'))
         self.transition('proposal_assessment', opportunity=pending.token)
         try:
             if result['status'] != 'decision_complete' or not result.get('proposal'):

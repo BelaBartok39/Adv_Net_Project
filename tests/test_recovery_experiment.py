@@ -1,5 +1,5 @@
 """Offline tests for controlled fault ownership and cleanup; no Docker calls."""
-from contextlib import redirect_stderr
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from copy import deepcopy
 from io import StringIO
 import json
@@ -112,6 +112,72 @@ class RecoveryExperimentTests(unittest.TestCase):
         schedule, _ = load_schedule(json.dumps(workload(360)).encode(), manifest)
         self.assertEqual(schedule.duration_seconds, 360)
         self.assertEqual([f.offered_mbps for f in schedule.flows], [35, 25])
+
+    def test_five_minute_fault_extends_workload_and_controller_without_changing_rates(self):
+        manifest = json.loads(Path('topologies/abilene.json').read_text())
+        capacities = {f'{link[side]}:{link[side + "_interface"]}': 70
+                      for link in manifest['links'] for side in ('a', 'b')}
+        namespaces = SimpleNamespace(descriptors={'den': 17}, capacities=lambda *args: capacities)
+        lab = SimpleNamespace(configs=lambda *args: {'sea': 'fixture\n'}, wait_convergence=lambda *args, **kw: True)
+        calls = []
+        def timed_arm(argv, *, session_hook):
+            calls.append(argv)
+            with session_hook('owner', 'collector', namespaces):
+                pass
+            return 0
+        with TemporaryDirectory() as folder, redirect_stdout(StringIO()):
+            root = Path(folder) / 'trial'
+            with (patch('advnet.recovery_experiment.Lab', return_value=lab),
+                  patch('advnet.recovery_experiment.LabNamespaces.open', side_effect=lambda *args: nullcontext(namespaces)),
+                  patch('advnet.recovery_experiment._lab_lock', side_effect=lambda *args: nullcontext()),
+                  patch('advnet.recovery_experiment.setup'),
+                  patch('advnet.recovery_experiment.controller.main', side_effect=timed_arm),
+                  patch('advnet.recovery_experiment.fault_session', return_value=nullcontext()) as fault,
+                  patch('advnet.recovery_experiment.timed_results', return_value={}),
+                  patch('advnet.recovery_experiment.LinkDelay.rows', return_value=[])):
+                self.assertEqual(main(['--arm', 'observe', '--output', str(root), '--fault-hold', '5m',
+                                       '--openrouter-provider', 'wafer', '--max-output-tokens', '8192',
+                                       '--llm-evidence', 'path-summary']), 0)
+                self.assertEqual(fault.call_args.args[2:4], (60, 300))
+            self.assertEqual(calls[0][calls[0].index('--duration') + 1], '480s')
+            plan = json.loads((root / 'plan.json').read_text())
+            self.assertEqual((plan['duration_seconds'], plan['fault_hold_seconds']), (480, 300))
+            self.assertEqual(plan['llm_request_settings'], {'openrouter_provider': 'wafer', 'max_output_tokens': 8192,
+                                                          'llm_evidence': 'path-summary'})
+            self.assertEqual(calls[0][calls[0].index('--openrouter-provider') + 1], 'wafer')
+            self.assertEqual(calls[0][calls[0].index('--max-output-tokens') + 1], '8192')
+            self.assertEqual(calls[0][calls[0].index('--llm-evidence') + 1], 'path-summary')
+            traffic = json.loads((root / 'workload.json').read_text())
+            self.assertEqual([f['offered_mbps'] for f in traffic['flows']], [35, 25])
+            self.assertTrue(all(f['stop_seconds'] == 480 for f in traffic['flows']))
+            for provider, tokens, evidence in [('wafer', '4096', 'path-summary'),
+                                               ('other-provider', '8192', 'path-summary'),
+                                               ('wafer', '8192', 'raw')]:
+                with redirect_stderr(StringIO()), patch('advnet.recovery_experiment.Lab.configs') as readback:
+                    with self.assertRaises(SystemExit):
+                        main(['--arm', 'observe', '--output', str(Path(folder)/'never-created'),
+                              '--fault-hold', '5m', '--match', str(root/'plan.json'),
+                              '--openrouter-provider', provider, '--max-output-tokens', tokens,
+                              '--llm-evidence', evidence])
+                    readback.assert_not_called()
+                    self.assertFalse((Path(folder)/'never-created').exists())
+
+    def test_invalid_llm_options_fail_before_lab_or_output_changes(self):
+        for options in (['--max-output-tokens', '0'], ['--max-output-tokens', '65537'],
+                        ['--openrouter-provider', 'invalid provider']):
+            with TemporaryDirectory() as folder, redirect_stderr(StringIO()):
+                output = Path(folder)/'never-created'
+                with patch('advnet.recovery_experiment.Lab') as lab, self.assertRaises(SystemExit):
+                    main(['--arm', 'observe', '--output', str(output), *options])
+                lab.assert_not_called()
+                self.assertFalse(output.exists())
+
+    def test_fault_hold_cannot_extend_run_beyond_twenty_four_hours(self):
+        with TemporaryDirectory() as folder, redirect_stderr(StringIO()):
+            root = Path(folder) / 'never-created'
+            with self.assertRaises(SystemExit):
+                main(['--arm', 'observe', '--output', str(root), '--fault-hold', '24h'])
+            self.assertFalse(root.exists())
 
     def test_missing_credentials_fail_before_lab_or_output_changes(self):
         with TemporaryDirectory() as folder, patch.dict('os.environ', {}, clear=True), redirect_stderr(StringIO()):

@@ -213,6 +213,8 @@ coverage is all-host routing reachability; security-zone and congestion-repair
 experiments remain separate work.
 
 - [Abilene setup, scenarios, and measured results](docs/ABILENE_BASELINE.md)
+- [Experiment results, conclusions, and report hypotheses](docs/EXPERIMENT_RESULTS.md)
+- [NetConfArena comparison and proposed external Jev evaluation](docs/NETCONF_ARENA_COMPARISON.md)
 - [Visualizer and replay](docs/VISUALIZER.md)
 - [Decision pipeline and partner interfaces](docs/DECISION_PIPELINE.md)
 - [Dynamic traffic plans, replay, evidence, and optional Abilene tests](docs/DYNAMIC_TRAFFIC.md)

@@ -2,6 +2,7 @@
 import json
 import math
 import os
+import re
 from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Callable
@@ -13,6 +14,28 @@ class Reply:
     model: str
     elapsed_ms: float
     usage: dict = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
+
+
+def safe_reply_metadata(metadata):
+    """Keep routing/completion identifiers, never content or reasoning text."""
+    result = {}
+    for key in ('provider', 'requested_provider', 'generation_id'):
+        value = metadata.get(key)
+        if isinstance(value, str) and re.fullmatch(r'[\w ./:+()\-]{1,128}', value):
+            result[key] = value
+    if metadata.get('finish_reason') in ('stop', 'length', 'tool_calls', 'function_call', 'content_filter', 'error', 'other'):
+        result['finish_reason'] = metadata['finish_reason']
+    return result
+
+
+class ProviderResponseError(ValueError):
+    """An unsuccessful completion can still have measured usage and billing."""
+    def __init__(self, code, reply):
+        if code not in ('output_token_limit', 'empty_response', 'empty_content', 'unsupported_finish_reason'):
+            raise ValueError('Unknown completion error code')
+        super().__init__(code)
+        self.code, self.reply = code, reply
 
 
 def timed(call: Callable, model: str) -> Reply:
@@ -58,30 +81,49 @@ class Jev:
 
 
 class LLM:
-    def __init__(self, provider: str, model: str, timeout: float, max_tokens: int, base_url=None):
+    def __init__(self, provider: str, model: str, timeout: float, max_tokens: int, base_url=None,
+                 *, endpoint_provider=None):
         self.provider, self.model, self.timeout = provider, model, timeout
         self.max_tokens, self.base_url = max_tokens, base_url
+        if endpoint_provider is not None and not re.fullmatch(r'[a-z0-9_./-]{1,128}', endpoint_provider):
+            raise ValueError('Use an OpenRouter provider slug')
+        self.endpoint_provider = endpoint_provider
 
     def propose(self, system: str, state: dict) -> Reply:
         prompt = json.dumps(state, sort_keys=True)
 
-        def call():
-            from openai import OpenAI
-            if self.provider not in {"openrouter", "compatible"}:
-                raise ValueError("Use the openrouter provider (compatible is an alias)")
-            with OpenAI(api_key=os.environ["OPEN_ROUTER_KEY"],
-                        base_url=self.base_url or "https://openrouter.ai/api/v1",
-                        timeout=self.timeout, max_retries=0) as client:
-                response = client.chat.completions.create(
-                    model=self.model, max_tokens=self.max_tokens,
-                    messages=[{"role": "system", "content": system},
-                              {"role": "user", "content": prompt}],
-                )
-                if not response.choices or response.choices[0].finish_reason != "stop":
-                    raise ValueError("LLM response was incomplete or requested tools")
-                text = response.choices[0].message.content
-            return text, response.model, response.usage.model_dump(mode="json") if response.usage else {}
-        return timed(call, self.model)
+        from openai import OpenAI
+        if self.provider not in {"openrouter", "compatible"}:
+            raise ValueError("Use the openrouter provider (compatible is an alias)")
+        extra = {}
+        if self.endpoint_provider:
+            extra['extra_body'] = {'provider': {'only': [self.endpoint_provider],
+                                               'allow_fallbacks': False, 'require_parameters': True}}
+        start = perf_counter()
+        with OpenAI(api_key=os.environ["OPEN_ROUTER_KEY"],
+                    base_url=self.base_url or "https://openrouter.ai/api/v1",
+                    timeout=self.timeout, max_retries=0) as client:
+            response = client.chat.completions.create(
+                model=self.model, max_tokens=self.max_tokens,
+                messages=[{"role": "system", "content": system},
+                          {"role": "user", "content": prompt}], **extra)
+        choice = response.choices[0] if response.choices else None
+        reason = choice.finish_reason if choice else None
+        metadata = safe_reply_metadata({'provider': getattr(response, 'provider', None),
+                                        'requested_provider': self.endpoint_provider,
+                                        'generation_id': getattr(response, 'id', None),
+                                        'finish_reason': reason if reason in ('stop', 'length', 'tool_calls', 'function_call',
+                                                                             'content_filter', 'error') else 'other'})
+        reply = Reply(choice.message.content if choice else None, response.model or self.model,
+                      (perf_counter()-start)*1000,
+                      response.usage.model_dump(mode='json') if response.usage else {}, metadata)
+        if choice is None:
+            raise ProviderResponseError('empty_response', reply)
+        if reason != 'stop':
+            raise ProviderResponseError('output_token_limit' if reason == 'length' else 'unsupported_finish_reason', reply)
+        if not isinstance(reply.value, str) or not reply.value.strip():
+            raise ProviderResponseError('empty_content', reply)
+        return reply
 
 
 class MockJev:
