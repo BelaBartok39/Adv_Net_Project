@@ -5,7 +5,7 @@ import json
 import math
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, ConfigDict, Field, JsonValue, model_validator
 
 from .contracts import Contract, Proposal
 from .eos import candidate_configs
@@ -42,6 +42,7 @@ class RuntimeWindow(Contract):
     all_reachable: bool
     ospf_healthy: bool
     mean_rtt_ms: float | None = Field(ge=0)
+    probe_pairs: list[dict[str, JsonValue]] = Field(default_factory=list)
     traffic_scope: Literal['confirmed_idle', 'single_flow', 'concurrent_udp']
     traffic: dict | None
 
@@ -96,6 +97,7 @@ class RuntimeWindow(Contract):
         fields = self.model_dump(mode='json', exclude={'traffic'})
         if self.traffic:
             allowed = ('received_mbps', 'loss_fraction', 'max_link_utilization', 'link_utilization',
+                       'mode', 'concurrency_verified', 'overlap_window',
                        'source', 'destination', 'destination_port', 'offered_mbps', 'actual_offered_mbps',
                        'sent_packets', 'received_packets')
             fields['traffic'] = {k: self.traffic[k] for k in allowed if k in self.traffic}
@@ -109,6 +111,17 @@ class RuntimeWindow(Contract):
 
 class RuntimeRejection(ValueError):
     """An internal reason code safe to write to the evidence log."""
+
+
+class RuntimeMeasurementError(ValueError):
+    """A collector-owned reason and measurement evidence, without configs/prompts.
+
+    Use only for known internal collector failures. Arbitrary transport/provider
+    exceptions retain the executor's existing type-only error reporting.
+    """
+    def __init__(self, reason, evidence):
+        super().__init__(reason)
+        self.evidence = evidence
 
 
 def verified(verdict):
@@ -253,11 +266,15 @@ class VerifiedExecutor:
         except EvidenceFailure:
             raise
         except Exception as error:
+            if isinstance(error, RuntimeMeasurementError):
+                transition('runtime_result', accepted=False, details=[str(error)],
+                           measurement_error=error.evidence)
             if not mutated:
                 return outcome('rejected', 'predeploy_' + type(error).__name__)
             limit = recovery_deadline()
             try:
-                transition('rollback', reason=str(error) if isinstance(error, RuntimeRejection) else type(error).__name__)
+                transition('rollback', reason=str(error) if isinstance(error, (RuntimeRejection, RuntimeMeasurementError))
+                           else type(error).__name__)
                 current = read_change(limit)
                 if current != before_id:
                     self.lab.replace({n: plan.before[n] for n in touched}, root/'rollback', limit)

@@ -68,7 +68,7 @@ def continuous_experiment(name, rows, *, replay=False):
     observe_only = False
     mode = None
     peak = None
-    phase_events = {'decision', 'verification', 'verified', 'deployment', 'runtime_validation',
+    phase_events = {'decision', 'observation_collection', 'verification', 'verified', 'deployment', 'runtime_validation',
                     'runtime_result', 'rollback', 'recovery', 'blocked', 'stopped'}
     for row in rows:
         if not isinstance(row, dict) or not _time(row.get('at')):
@@ -78,7 +78,8 @@ def continuous_experiment(name, rows, *, replay=False):
         attempt_id = row.get('intervention')
         item = None
         if isinstance(attempt_id, str) and event in ('transition', 'decision_result', 'proposal',
-                                                     'proposal_rejected', 'inference_discarded', 'worker_error'):
+                                                     'proposal_rejected', 'inference_discarded', 'worker_error',
+                                                     'observation_request_queued'):
             item = attempts.setdefault(attempt_id, {'id': attempt_id, 'started_at': _time(at), 'diffs': {}})
         stage, status, message = None, 'complete', None
         if event == 'live_session_started':
@@ -128,6 +129,14 @@ def continuous_experiment(name, rows, *, replay=False):
             item.setdefault('decision', {})['proposal'] = {'outcome': 'candidate', 'changes': row.get('changes', [])}
             item['proposal_at'] = _time(at)
             stage = 'proposal'
+        elif event in ('observation_request_queued', 'observation_request_started', 'observation_request_completed',
+                       'observation_request_rejected', 'observation_request_failed'):
+            stage = event
+            status = 'failed' if event.endswith(('rejected', 'failed')) else 'running' if event.endswith('started') else 'complete'
+            message = row.get('reason') or ', '.join(row.get('requests', [])) or row.get('error_type')
+            if item is not None and event == 'observation_request_queued':
+                item.setdefault('decision', {})['proposal'] = {
+                    'outcome': 'needs_observation', 'changes': [], 'observation_requests': row.get('requests', [])}
         elif event == 'policy':
             decision = row.get('decision') or {}
             reasons = decision.get('reasons', [])
@@ -141,7 +150,7 @@ def continuous_experiment(name, rows, *, replay=False):
         elif event == 'transition' and isinstance(phase, str):
             outcome = row.get('outcome')
             last_phase = {'stage': phase, 'at': at, 'status': 'running'
-                          if phase in ('decision', 'verification', 'deployment', 'runtime_validation', 'rollback')
+                          if phase in ('decision', 'observation_collection', 'verification', 'deployment', 'runtime_validation', 'rollback')
                           else 'complete'}
             if phase in phase_events or outcome:
                 stage, status = phase, last_phase['status']

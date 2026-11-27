@@ -1,6 +1,6 @@
 """Live collector contracts and continuous UDP window regression tests."""
 import argparse
-from contextlib import nullcontext, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stdout
 from io import StringIO
 import json
 import os
@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from advnet.controller import duration, main
 from advnet.controller_demo import DemoClock, DemoNetwork
-from advnet.controller_execution import fingerprint
+from advnet.controller_execution import RuntimeMeasurementError, fingerprint
 from advnet.controller_live import LiveCollector, tbf_rates
 from advnet.controller_traffic import RECEIVER_GRACE_SECONDS, ReceiverTraffic, demand_id, reference_profiles
 from advnet.dynamic_traffic import load_schedule
@@ -109,6 +109,26 @@ class LiveControllerTests(unittest.TestCase):
         frame = collector('generation-1', deadline)
         self.assertTrue(frame.signal.performance.healthy)
         self.assertAlmostEqual(frame.runtime['performance']['latency_limit_ms'], 6.875)
+        self.assertEqual(frame.model_input.measurements['metric_definitions']['mean_rtt_ms']['required_pair_count'], 2)
+        commands = []
+        lab.cli = lambda node, cmd, deadline: (commands.append(cmd) or 'fixture route')
+        requested = collector.observe_requests(['routing_tables', 'refresh_telemetry'], 'generation-1', deadline)
+        evidence = requested.model_input.measurements['requested_observations']
+        self.assertEqual(set(evidence['routing_tables']['routes']), {'sea', 'sva'})
+        self.assertEqual(commands, ['show ip route', 'show ip route'])
+        self.assertEqual(len(evidence['refresh_telemetry']['pairs']), 2)
+        lab.cli = lambda *args: 'x' * 8193
+        with self.assertRaisesRegex(ValueError, 'size limit'):
+            collector.observe_requests(['routing_tables'], 'generation-1', deadline)
+        with self.assertRaisesRegex(ValueError, 'Unsupported'):
+            collector.observe_requests(['show running-config'], 'generation-1', deadline)
+        def changed_config(*args):
+            configs['sea'] += '! external\n'
+            return 'fixture route'
+        lab.cli = changed_config
+        with self.assertRaisesRegex(ValueError, 'scope changed'):
+            collector.observe_requests(['routing_tables'], 'generation-1', deadline)
+        configs['sea'] = configs['sva']
         lab.rtt = 20
         frame = collector('generation-1', deadline)
         self.assertFalse(frame.signal.performance.healthy)
@@ -131,8 +151,11 @@ class LiveControllerTests(unittest.TestCase):
         self.assertTrue(frame.signal.ospf.healthy)
         self.assertEqual(frame.signal.reachability.measurement_generation, 'generation-1')
         traffic.current = lambda: ('e2', demand_id(profile))
-        with self.assertRaisesRegex(ValueError, 'demand changed'):
+        with self.assertRaisesRegex(RuntimeMeasurementError, 'demand changed') as caught:
             collector.window('after', 'repair', deadline)
+        self.assertIn('health_window', caught.exception.evidence)
+        self.assertIn('pairs', caught.exception.evidence)
+        self.assertNotIn('configs', caught.exception.evidence)
 
     def test_performance_checks_each_concurrent_receiver_and_matching_reference(self):
         net = DemoNetwork(DemoClock())
@@ -147,6 +170,11 @@ class LiveControllerTests(unittest.TestCase):
                             overlap_window=dict(start_seconds=0, end_seconds=1),
                             max_link_utilization=.93, flows=flows)})
         self.assertTrue(reference.performance_check(reference)['accepted'])
+        slow = reference.model_copy(update={'mean_rtt_ms': 30})
+        details = slow.performance_check(reference)['details']
+        self.assertEqual(len(details), 1)
+        self.assertTrue(details[0].startswith('Network-wide'))
+        self.assertNotIn("('sea',", details[0])
         # Aggregate delivery is insufficient: each receiver must keep its rate.
         bad_flows = [dict(flows[0], received_mbps=60), dict(flows[1], received_mbps=30)]
         impaired = reference.model_copy(update={'traffic': dict(reference.traffic, flows=bad_flows)})
@@ -159,9 +187,59 @@ class LiveControllerTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, 'Incomparable'):
                 reference.model_copy(update=changes).performance_check(reference)
 
+    def test_calibration_records_failed_health_and_stops_its_traffic(self):
+        reference = DemoNetwork(DemoClock()).window('healthy', 'repair', SimpleNamespace(remaining=lambda: 60))
+        for failure in ('host', 'receiver_window', None):
+            with self.subTest(failure=failure):
+                collector = LiveCollector.__new__(LiveCollector)
+                collector.baselines = {}
+                active = {}
+                stops = []
+                collector.traffic = SimpleNamespace(
+                    active=active,
+                    start=lambda flow, rate, **kw: active.update({flow: rate}),
+                    stop=lambda flow, **kw: (stops.append(flow), active.pop(flow)))
+                sample = SimpleNamespace(evidence={'flows': []}, health=SimpleNamespace(
+                    failed_pairs=[('atl', 'sea')] if failure == 'host' else [],
+                    mismatched_ospf=[], mean_rtt_ms=1, pairs=[]))
+                collector._sample = lambda _: sample
+
+                def runtime(_):
+                    if failure == 'receiver_window':
+                        raise ValueError('Receiver evidence unavailable')
+                    return reference.model_copy(update={'all_reachable': failure != 'host'})
+
+                collector._runtime = runtime
+                events = []
+                call = lambda: collector.calibrate(
+                    {reference.demand_id: [('flow-a', 50)]}, reference.config_sha256,
+                    SimpleNamespace(remaining=lambda: 60), recorder=lambda **entry: events.append(entry))
+                if failure:
+                    with self.assertRaisesRegex(ValueError, 'failed host pairs' if failure == 'host'
+                                                else 'Receiver evidence unavailable'):
+                        call()
+                    self.assertFalse(collector.baselines)
+                    self.assertFalse(events[0]['accepted'])
+                else:
+                    call()
+                    self.assertTrue(events[0]['accepted'])
+                    self.assertIn(reference.demand_id, collector.baselines)
+                self.assertEqual(stops, ['flow-a'])
+                self.assertFalse(active)
+                self.assertEqual(events[0]['health']['failed_pairs'], sample.health.failed_pairs)
+
     def test_launcher_writes_live_session_summary_in_observe_only_mode(self):
         clock = DemoClock()
         network = DemoNetwork(clock)
+        hook_events = []
+
+        @contextmanager
+        def hook(owner, collector, namespaces):
+            hook_events.append('entered')
+            try:
+                yield
+            finally:
+                hook_events.append('cleaned')
 
         class CollectorFixture:
             health_probe_workers = 4
@@ -186,8 +264,10 @@ class LiveControllerTests(unittest.TestCase):
                   patch('advnet.controller.LiveCollector', CollectorFixture),
                   patch('advnet.dynamic_udp.LOCK_PATH', root / 'test.lock')):
                 output = root / 'run'
-                code = main(['run', '--duration', '30s', '--observe-only', '--output', str(output)])
+                code = main(['run', '--duration', '30s', '--observe-only', '--output', str(output)],
+                            session_hook=hook)
             self.assertEqual(code, 0)
+            self.assertEqual(hook_events, ['entered', 'cleaned'])
             summary = json.loads(console.getvalue())
             self.assertTrue(summary['observe_only'])
             self.assertTrue(summary['traffic_cleanup_succeeded'])

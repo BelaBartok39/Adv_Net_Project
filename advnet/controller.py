@@ -1,7 +1,7 @@
 """Run the live Abilene controller for a bounded observation period."""
 import argparse
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import importlib.util
 import json
 import os
@@ -47,7 +47,7 @@ def cancellation(stop):
 
 
 @contextmanager
-def live_session(args, controller, lab, schedule, manifest, parameters, summary):
+def live_session(args, controller, lab, schedule, manifest, parameters, summary, *, session_hook=None):
     root, stop, clock = controller.journal.root, controller.stop, controller.clock
     saved = root / 'live-baseline.json'
     resumed = saved.is_file()
@@ -75,7 +75,8 @@ def live_session(args, controller, lab, schedule, manifest, parameters, summary)
                 atomic_json(root / 'preflight' / 'verification.json', verdict)
                 if not verified(verdict):
                     raise ValueError('Healthy lab configuration did not pass Batfish preflight')
-                collector.calibrate(profiles, executor.config_id(executor.healthy_configs), startup)
+                collector.calibrate(profiles, executor.config_id(executor.healthy_configs), startup,
+                                    recorder=lambda **entry: controller.event('calibration', **entry))
             atomic_json(saved, {'parameters': parameters, 'configs': executor.healthy_configs,
                                 'windows': {key: window.model_dump(mode='json')
                                             for key, window in collector.baselines.items()}})
@@ -121,7 +122,8 @@ def live_session(args, controller, lab, schedule, manifest, parameters, summary)
             controller.event('live_session_started', session=session_id, duration_seconds=args.duration,
                              observe_only=args.observe_only, workload=schedule is not None)
             print(f'Monitoring Abilene for {args.duration:g}s. Evidence in {root}', file=sys.stderr, flush=True)
-            yield
+            with session_hook(controller, collector, namespaces) if session_hook else nullcontext():
+                yield
         finally:
             traffic_stop.set()
             if worker is not None:
@@ -148,7 +150,7 @@ def live_session(args, controller, lab, schedule, manifest, parameters, summary)
             atomic_json(artifacts / 'summary.json', summary)
 
 
-def main(argv=None):
+def main(argv=None, *, session_hook=None):
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument('action', choices=['run'])
     cli.add_argument('--duration', type=duration, required=True, help='Observation runtime, e.g. 20m')
@@ -197,7 +199,9 @@ def main(argv=None):
                       'jev_model': args.sysone_model, 'catalog_sha256': catalog_hash(catalog),
                       'window_seconds': args.window_seconds, 'interval': args.interval,
                       'health_probe_workers': LiveCollector.health_probe_workers,
-                      'performance_monitor_version': 1,
+                      'performance_monitor_version': 2,
+                      'observation_timeout': settings.observation_timeout,
+                      'max_observation_rounds': settings.max_observation_rounds,
                       'inference_timeout': args.inference_timeout,
                       'workload_sha256': fingerprint(schedule.model_dump(mode='json')) if schedule else None}
         oracle = ProcessVerifier([sys.executable, '-m', 'advnet.batfish_gate'])
@@ -211,7 +215,8 @@ def main(argv=None):
         summary = {'output': str(output), 'mode': settings.mode, 'observe_only': args.observe_only,
                    'duration_seconds': args.duration}
         with cancellation(stop):
-            controller.run(session=lambda: live_session(args, controller, lab, schedule, manifest, parameters, summary))
+            controller.run(session=lambda: live_session(args, controller, lab, schedule, manifest, parameters, summary,
+                                                       session_hook=session_hook))
         print(json.dumps(summary))
         if summary['blocked']:
             return 1

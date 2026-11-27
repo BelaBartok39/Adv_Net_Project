@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from .contracts import CatalogAction, Feedback, Observation, Proposal, render_eos
 
-PROMPT_VERSION = "eos-ospf-v1"
+PROMPT_VERSION = "eos-ospf-v2"
 
 
 def safe_provider_error(error):
@@ -136,7 +136,14 @@ class DecisionEngine:
                 "insufficient, request specific observations. Keep patches small. Do not repeat a "
                 "rejected patch unless new evidence explains why it will work. No shell, management, "
                 "ACL, or arbitrary CLI changes are supported in this initial version. Proposed "
-                "changes require external verification and measured acceptance. Schema: "
+                "changes require external verification and measured acceptance. "
+                "mean_rtt_ms is the network-wide arithmetic mean of ICMP RTT across required "
+                "directed host pairs, including pairs outside the UDP workload. It is not "
+                "per-flow application latency. Restore the full declared measurement scope, "
+                "not just the workload paths. Consult metric_definitions, performance limits "
+                "and prior runtime rejection measurements. When observation_capabilities are "
+                "advertised, use needs_observation with only the exact supported identifiers "
+                "in observation_requests; do not put CLI or shell commands there. Schema: "
                 + json.dumps(Proposal.model_json_schema())
             )
             call_start = perf_counter()

@@ -7,15 +7,15 @@ import json
 import os
 import socket
 from statistics import mean
-from threading import Event
 import time
 from uuid import uuid4
 
-from .contracts import DeviceState, Observation
-from .controller_execution import RuntimeWindow, fingerprint
+from .contracts import DeviceState, Observation, SUPPORTED_OBSERVATIONS
+from .controller_execution import RuntimeMeasurementError, RuntimeWindow, fingerprint
 from .controller_telemetry import Frame
 from .controller_traffic import RECEIVER_GRACE_SECONDS, demand_id
 from .lab import command, full_neighbors
+from .trial import acceptance_limits
 from .stability_policy import HealthMeasurement, LinkMeasurement, NetworkObservation
 
 
@@ -214,6 +214,11 @@ class LiveCollector:
                'demand_id': profile, 'flows': flows, 'link_utilization': utilization,
                'link_capacities_mbps': after, 'counter_interval_seconds': port_time,
                'capacity_sha256': capacity_id, 'config_sha256': self.config_id(configs),
+               'health_window': {'start': health.opened.isoformat(), 'end': health.closed.isoformat(),
+                                 'duration_seconds': (health.closed - health.opened).total_seconds(),
+                                 'failed_pairs': [list(pair) for pair in health.failed_pairs],
+                                 'mismatched_ospf': [list(adjacency) for adjacency in health.mismatched_ospf],
+                                 'mean_rtt_ms': health.mean_rtt_ms},
                'error': error}
         return LiveSample(at, start, end, configs, health, links, raw)
 
@@ -225,7 +230,8 @@ class LiveCollector:
         health, raw = sample.health, sample.evidence
         flows = raw['flows']
         if raw['error'] or flows is None:
-            raise ValueError(raw['error'] or 'Receiver evidence unavailable')
+            raise RuntimeMeasurementError(raw['error'] or 'Receiver evidence unavailable',
+                                          {**raw, 'pairs': health.pairs})
         traffic, scope = None, 'confirmed_idle'
         if flows:
             maximum = max(raw['link_utilization'].values())
@@ -240,7 +246,8 @@ class LiveCollector:
                              demand_id=raw['demand_id'], demand_epoch=raw['demand_epoch'],
                              config_sha256=raw['config_sha256'], capacity_sha256=raw['capacity_sha256'],
                              all_reachable=not health.failed_pairs, ospf_healthy=not health.mismatched_ospf,
-                             mean_rtt_ms=health.mean_rtt_ms, traffic_scope=scope, traffic=traffic)
+                             mean_rtt_ms=health.mean_rtt_ms, probe_pairs=health.pairs,
+                             traffic_scope=scope, traffic=traffic)
 
     def __call__(self, generation, deadline):
         sample = self._sample(deadline)
@@ -271,7 +278,21 @@ class LiveCollector:
             'baseline_mean_rtt_ms': reference.mean_rtt_ms if reference else None,
             'latency_limit_ms': reference.mean_rtt_ms * 1.25 + 5
             if reference is not None and reference.mean_rtt_ms is not None else None,
+            'acceptance_limits': acceptance_limits(reference.model_dump(), 'repair')
+            if reference is not None and reference.mean_rtt_ms is not None else None,
         }
+        raw['metric_definitions'] = {
+            'mean_rtt_ms': {'scope': 'all_required_directed_host_pairs',
+                            'required_pair_count': len(self.expected_pairs),
+                            'measured_pair_count': sum(p['rtt_avg_ms'] is not None for p in health.pairs),
+                            'aggregation': 'Arithmetic mean of per-pair ICMP rtt_avg_ms',
+                            'units': 'ms', 'includes_pairs_outside_udp_workload': True},
+            'receiver_metrics': {'scope': 'individual_udp_flow',
+                                 'metrics': ['received_mbps', 'loss_fraction']},
+            'max_link_utilization': {'scope': 'maximum_across_measured_directed_backbone_interfaces'},
+        }
+        raw['observation_capabilities'] = {'supported': list(SUPPORTED_OBSERVATIONS),
+                                           'max_requests_per_round': 2}
         rates = [LinkMeasurement(link_id=key, observed_at=at, measurement_generation=generation,
                                  throughput_mbps=rate,
                                  throughput_evidence='Linux interface TX byte delta' if rate is not None else None,
@@ -306,22 +327,75 @@ class LiveCollector:
             self.receiver_windows += 1
         return Frame('live', signal, model, raw)
 
+    def observe_requests(self, requests, generation, deadline):
+        """Collect an allowlisted, read-only request and a fresh scoped frame."""
+        if not requests or len(requests) > 2 or any(r not in SUPPORTED_OBSERVATIONS for r in requests):
+            raise ValueError('Unsupported or excessive observation request')
+        if len(self.lab.routers) > 32:
+            raise ValueError('Observation router limit exceeded')
+        requested = {}
+        config_id = None
+        if 'routing_tables' in requests:
+            config_id = self.config_id(self.lab.configs(deadline))
+            def one(node):
+                text = self.lab.cli(node, 'show ip route', deadline)
+                if len(text.encode()) > 8192:
+                    raise ValueError('Routing table exceeds observation size limit')
+                return node, text
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                routes = dict(pool.map(one, self.lab.routers))
+            requested['routing_tables'] = {'observed_at': self.clock.now().isoformat(),
+                                            'config_sha256': config_id, 'routes': routes}
+        frame = self(generation, deadline)
+        deadline.remaining()
+        if frame.runtime['error'] or (config_id is not None and frame.runtime['config_sha256'] != config_id):
+            raise ValueError('Observation scope changed or fresh measurement unavailable')
+        if 'refresh_telemetry' in requests:
+            requested['refresh_telemetry'] = {'observed_at': frame.signal.observed_at.isoformat(),
+                                              'observation_id': frame.signal.observation_id,
+                                              'pairs': frame.model_input.measurements['pairs']}
+        frame.runtime['requested_observations'] = requested
+        frame.model_input.measurements['requested_observations'] = requested
+        return frame
+
     def window(self, phase, kind, deadline):
         if phase == 'healthy':
             _, demand = self.traffic.current()
             return self.baselines[demand]
         return self._runtime(self._sample(deadline))
 
-    def calibrate(self, profiles, baseline_id, deadline):
+    def calibrate(self, profiles, baseline_id, deadline, *, recorder=None):
         for demand, profile in profiles.items():
             try:
                 for flow, rate in profile:
                     self.traffic.start(flow, rate, timeout_seconds=deadline.remaining())
-                window = self._runtime(self._sample(deadline))
-                if (window.config_sha256 != baseline_id or window.demand_id != demand
-                        or not window.all_reachable or not window.ospf_healthy
-                        or window.mean_rtt_ms is None or not window.delivered_baseline()):
-                    raise ValueError('Unable to establish a healthy live reference for demand ' + demand[:12])
+                sample = self._sample(deadline)
+                failures = []
+                window = None
+                try:
+                    window = self._runtime(sample)
+                except ValueError as error:
+                    failures.append(str(error))
+                if window is not None:
+                    checks = {
+                        'configuration changed': window.config_sha256 != baseline_id,
+                        'demand changed': window.demand_id != demand,
+                        f'{len(sample.health.failed_pairs)} failed host pairs': not window.all_reachable,
+                        f'{len(sample.health.mismatched_ospf)} OSPF mismatches': not window.ospf_healthy,
+                        'RTT unavailable': window.mean_rtt_ms is None,
+                        'receiver delivery unavailable': not window.delivered_baseline(),
+                    }
+                    failures.extend(reason for reason, failed in checks.items() if failed)
+                if recorder:
+                    recorder(demand_id=demand, accepted=not failures, details=failures,
+                             measurement=sample.evidence,
+                             health={'failed_pairs': sample.health.failed_pairs,
+                                     'mismatched_ospf': sample.health.mismatched_ospf,
+                                     'mean_rtt_ms': sample.health.mean_rtt_ms,
+                                     'pairs': sample.health.pairs})
+                if failures:
+                    raise ValueError('Unable to establish a healthy live reference for demand '
+                                     + demand[:12] + ': ' + '; '.join(failures))
                 self.baselines[demand] = window
             finally:
                 for flow_id in list(self.traffic.active):

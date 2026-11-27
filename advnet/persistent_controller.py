@@ -17,11 +17,12 @@ from uuid import uuid4
 
 from pydantic import Field
 
-from .contracts import Contract, Feedback, Observation, Proposal
+from .contracts import Contract, Feedback, Observation, Proposal, SUPPORTED_OBSERVATIONS
 from .controller_execution import EvidenceFailure, fingerprint, outcome
 from .metrics import inference_metrics
 from .pipeline import DecisionEngine
 from .stability_policy import ConfigurationChange, StabilityPolicy
+from .trial import acceptance_limits
 
 
 class Settings(Contract):
@@ -33,6 +34,8 @@ class Settings(Contract):
     operation_timeout: float = Field(default=120, gt=0)
     recovery_timeout: float = Field(default=180, gt=0)
     max_attempts: int = Field(default=3, ge=1, le=5)
+    observation_timeout: float = Field(default=30, gt=0, le=60)
+    max_observation_rounds: int = Field(default=1, ge=0, le=2)
     observe_only: bool = False
 
 
@@ -146,7 +149,8 @@ def _infer(provider, args, destination, *, timed=False):
             data['proposal'] = dict(outcome=proposal.outcome, diagnosis='Validated decision',
                                     evidence=['Scoped decision observation'], expected_effect='Requires runtime checks',
                                     changes=[c.model_dump() for c in proposal.changes],
-                                    observation_requests=['Refresh telemetry'] if proposal.observation_requests else [])
+                                    observation_requests=[r if r in SUPPORTED_OBSERVATIONS else 'unsupported_request'
+                                                          for r in proposal.observation_requests])
     except Exception as error:
         data = dict(status='decision_error', error_type=type(error).__name__)
     if timed:
@@ -247,13 +251,90 @@ class PersistentController:
         end = self.clock.monotonic() + seconds
         return Budget(self.clock, end if recovery else min(end, self.end), None if recovery else self.stop)
 
-    def feedback(self, identifier, stage, reason, *, rollback=None, plan=None):
+    def feedback(self, identifier, stage, reason, *, rollback=None, plan=None, details=None, measurements=None):
         if self.episode:
+            patch = {'patch_sha256': plan.action.action_key,
+                     'changes': [c.model_dump() for c in plan.proposal.changes]} if plan else {}
             item = Feedback(attempt=self.episode['attempt'], candidate_id=identifier, stage=stage,
-                            accepted=False, details=[reason], rollback_succeeded=rollback,
-                            measurements={'patch_sha256': plan.action.action_key,
-                                          'changes': [c.model_dump() for c in plan.proposal.changes]} if plan else {})
+                            accepted=False, details=details or [reason], rollback_succeeded=rollback,
+                            measurements={**patch, **(measurements or {})})
             self.episode['feedback'].append(item.model_dump())
+
+    def request_observations(self, pending, proposal):
+        requests = proposal.observation_requests
+        if (not requests or len(requests) > 2 or any(r not in SUPPORTED_OBSERVATIONS for r in requests)
+                or not callable(getattr(self.telemetry, 'observe_requests', None))):
+            reason = 'unsupported_or_excessive_observation_request'
+        elif self.episode.get('observation_rounds', 0) >= self.settings.max_observation_rounds:
+            reason = 'observation_round_limit'
+        elif self.episode['attempt'] >= self.settings.max_attempts:
+            reason = 'episode_attempt_limit'
+        else:
+            reason = None
+        if reason:
+            self.event('observation_request_rejected', intervention=pending.identifier, reason=reason,
+                       supported=list(SUPPORTED_OBSERVATIONS))
+            self.feedback(pending.identifier, 'decision', reason,
+                          measurements={'supported_observations': list(SUPPORTED_OBSERVATIONS)})
+            self.close_token(pending.token, 'rejected')
+            return
+        self.episode['observation_rounds'] = self.episode.get('observation_rounds', 0) + 1
+        self.episode['observation_requests'] = list(dict.fromkeys(requests))
+        self.feedback(pending.identifier, 'decision', 'Supported observations queued for a fresh evaluation.',
+                      measurements={'observation_request': {'status': 'queued', 'requests': requests}})
+        self.event('observation_request_queued', intervention=pending.identifier, requests=requests)
+        # Existing retry limits remain in force. Collect immediately before the
+        # next eligible inference, so cooldown/backoff cannot stale the result.
+        self.close_token(pending.token, 'cancelled')
+
+    def collect_requested(self, token, frame):
+        requests = self.episode.pop('observation_requests', [])
+        limit = Budget(self.clock, min(self.end, self.clock.monotonic() + self.settings.observation_timeout), self.stop)
+        previous_at = frame.signal.observed_at
+        item = self.episode['feedback'][-1]
+        item['details'] = ['Requested observation collection started; no results confirmed yet.']
+        item['measurements']['observation_request']['status'] = 'started'
+        self.transition('observation_collection', requests=requests)
+        self.event('observation_request_started', requests=requests)
+        try:
+            frame = self.telemetry.observe_requests(requests, self.policy.measurement_generation, limit)
+            limit.remaining()
+            if (frame.source != self.settings.source or frame.model_input is None
+                    or frame.model_input.observed_at != frame.signal.observed_at
+                    or frame.signal.observed_at <= previous_at):
+                raise ValueError('Unaligned requested observation')
+            if not set(requests) <= frame.model_input.measurements.get('requested_observations', {}).keys():
+                raise ValueError('Requested observation results missing')
+            self.sync_external_readback(frame, limit)
+            decision = self.policy.evaluate(frame.signal)
+            self.save()
+            self.event('observation', decision=decision.model_dump(mode='json'),
+                       measurement=frame.signal.model_dump(mode='json'), runtime=frame.runtime)
+            current = self.policy.state.opportunity
+            if (not current or current.opportunity_id != token
+                    or decision.recommendation == 'insufficient_telemetry'):
+                self.event('observation_request_completed', requests=requests, inference_allowed=False,
+                           reason='opportunity_changed_or_recovered')
+                item['details'] = ['Requested observations discarded because the evaluation opportunity changed.']
+                item['measurements']['observation_request']['status'] = 'cancelled'
+                self.close_token(current.opportunity_id if current else token, 'cancelled')
+                return None
+            item = self.episode['feedback'][-1]
+            item['details'] = ['Requested observations collected; results are in the fresh observation.']
+            item['measurements']['observation_request']['status'] = 'completed'
+            self.event('observation_request_completed', requests=requests, inference_allowed=True,
+                       measurements=frame.model_input.measurements.get('requested_observations', {}))
+            self.save()
+            return frame
+        except EvidenceFailure:
+            raise
+        except Exception as error:
+            item = self.episode['feedback'][-1]
+            item['details'] = ['Requested observation collection failed: ' + type(error).__name__]
+            item['measurements']['observation_request']['status'] = 'failed'
+            self.event('observation_request_failed', error_type=type(error).__name__)
+            self.close_token(token, 'rejected')
+            return None
 
     def close_token(self, token, reason):
         current = self.policy.state.opportunity
@@ -344,6 +425,16 @@ class PersistentController:
             self.close_token(token, 'cancelled')
             self.event('inference_skipped', reason='episode_attempt_limit', opportunity=token)
             return
+        if self.episode.get('observation_requests'):
+            frame = self.collect_requested(token, frame)
+            if frame is None:
+                return
+            model = Observation.model_validate(frame.model_input).model_copy(deep=True)
+            model.measurements['stability_policy'] = context
+        if 'observation_capabilities' in model.measurements:
+            model.measurements['observation_capabilities'].update(
+                max_rounds_per_episode=self.settings.max_observation_rounds,
+                timeout_seconds=self.settings.observation_timeout)
         self.episode['attempt'] += 1
         identifier = self.id_factory()
         directory = self.journal.root/identifier
@@ -378,12 +469,17 @@ class PersistentController:
             if result['status'] != 'decision_complete' or not result.get('proposal'):
                 raise ValueError('No candidate')
             proposal = Proposal.model_validate(result['proposal'])
+            if proposal.outcome == 'needs_observation':
+                self.request_observations(pending, proposal)
+                return
             if proposal.outcome != 'candidate':
                 raise ValueError('No candidate')
             self.event('proposal', intervention=pending.identifier, changes=[c.model_dump() for c in proposal.changes])
             limit = self.budget()
             plan = self.executor.prepare(proposal, pending.observation, limit)
             limit.remaining()
+        except EvidenceFailure:
+            raise
         except Exception as error:
             self.event('proposal_rejected', opportunity=pending.token, intervention=pending.identifier,
                        error_type=type(error).__name__)
@@ -411,7 +507,21 @@ class PersistentController:
             return
         atomic_json(pending.root/'checkpoint.json', plan.before)
         start = self.clock.monotonic()
+        runtime = {}
         def phase(name, **fields):
+            if name == 'runtime_baseline':
+                runtime.update(healthy=fields['windows'][0], before=fields['windows'][1])
+                runtime['acceptance_limits'] = acceptance_limits(fields['windows'][0], pending.kind)
+            elif name == 'runtime_measurement':
+                runtime['after'] = fields['window']
+            elif name == 'runtime_result':
+                runtime['acceptance'] = {'accepted': fields['accepted'], 'details': fields['details']}
+                if fields.get('windows'):
+                    runtime.update(zip(('healthy', 'before', 'after'), fields['windows']))
+                if fields.get('measurement_error'):
+                    runtime['measurement_error'] = fields['measurement_error']
+            elif name == 'rollback':
+                runtime['rollback_reason'] = fields.get('reason')
             if name == 'deployment':
                 self.mutation_started = True
             self.transition(name, intervention=pending.identifier, opportunity=pending.token, **fields)
@@ -421,9 +531,12 @@ class PersistentController:
         self.policy.complete_intervention(pending.identifier, result)
         self.mutation_started = result.status == 'rollback_unconfirmed'
         if result.status == 'rejected':
-            self.feedback(pending.identifier, 'verification', result.evidence, plan=plan)
+            self.feedback(pending.identifier, 'decision' if runtime else 'verification', result.evidence, plan=plan,
+                          measurements={'runtime': runtime} if runtime else None)
         elif result.status == 'rolled_back':
-            self.feedback(pending.identifier, 'runtime', result.evidence, rollback=True, plan=plan)
+            self.feedback(pending.identifier, 'runtime', result.evidence, rollback=True, plan=plan,
+                          details=runtime.get('acceptance', {}).get('details') or [runtime.get('rollback_reason') or result.evidence],
+                          measurements={'runtime': runtime, 'rollback': {'succeeded': True, 'evidence': result.evidence}})
         else:
             self.episode = None
         phase('blocked' if self.policy.state.active else 'cooldown', outcome=result.status,
@@ -514,6 +627,13 @@ class PersistentController:
                     raise ValueError('Incompatible controller state')
                 self.policy = StabilityPolicy.restore(json.dumps(previous['policy']), clock=self.clock.now)
                 self.episode = previous['episode']
+                if self.episode:
+                    for feedback in self.episode['feedback']:
+                        request = feedback['measurements'].get('observation_request', {})
+                        if request.get('status') == 'started':
+                            request['status'] = 'interrupted'
+                            feedback['details'] = ['Requested observation collection was interrupted; no results confirmed.']
+                            self.event('observation_request_failed', error_type='InterruptedCollection')
                 self.mutation_started = previous['mutation_started']
             with session() if session else nullcontext():
                 self._run_loop()
