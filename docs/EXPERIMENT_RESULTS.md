@@ -698,3 +698,28 @@ study requires a separate arm and a declared catalog; expanding that catalog
 would constitute another experimental condition. Preserve the setup failures,
 earlier superseded block-four observations and power-state deviation when
 reporting these results.
+
+### Follow-on direction: verified action memory
+
+The planned latency comparison is complete. Detailed per-call accounting and
+phase-specific optimization analysis remain report work, not unfinished timed
+trials. Continuous-mode implementation and the report were checkpointed on
+`feature/continuous-optimization` at `fe41e37` before creating
+`feature/learned-jev-catalog`.
+
+The new experiment asks whether successful LLM reasoning can be reused through
+Jev's action catalog. The implementation quarantines typed LLM patches, requires
+two matching accepted outcomes in distinct output directories for promotion,
+scopes retrieval to configuration/demand/symptom context, and preserves all
+existing deployment guards. Reused executor failures retire entries. Collection,
+adaptive reuse and frozen evaluation modes are separate. No live result or
+learning benefit is claimed yet. See [protocol and commands](THINKING_CACHE.md).
+
+For initial training, use one fault per 20-minute run: two minutes of baseline,
+a five-minute bounded repair opportunity, then post-repair stability and cleanup.
+At least two matching independent successful LLM trials are needed; two distinct
+valid patches do not promote each other. Use frozen catalogs for held-out
+evaluation and retain fixed-catalog baselines, training costs, failed selections
+and rollback outcomes. Session duration must be matched within a new study;
+20-minute sessions are not directly interchangeable with the earlier eight-minute
+latency trials.

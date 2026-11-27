@@ -67,6 +67,32 @@ class PersistentControllerTests(unittest.TestCase):
     def outcomes(self):
         return [r.outcomes[-1].outcome.status for r in self.c.policy.state.interventions]
 
+    def test_memory_receives_executor_evidence_after_final_acceptance(self):
+        calls = []
+        class Memory:
+            def observe(inner, **kwargs):
+                calls.append(kwargs)
+                return None
+        self.c.decision.thinking_cache = Memory()
+        self.c.run()
+        self.assertEqual(len(calls), 1)
+        evidence = calls[0]
+        self.assertEqual(evidence['status'], 'success')
+        self.assertEqual(evidence['reason'], 'verified_readback_and_runtime')
+        self.assertTrue(evidence['runtime']['acceptance']['accepted'])
+        self.assertEqual(evidence['runtime']['after']['config_sha256'], evidence['after_id'])
+        self.assertEqual(evidence['decision']['metrics']['llm_calls'], 1)
+
+    def test_memory_failure_cannot_undo_accepted_repair(self):
+        class BrokenMemory:
+            def observe(inner, **kwargs):
+                raise OSError('secret persistence error')
+        self.c.decision.thinking_cache = BrokenMemory()
+        self.c.run()
+        self.assertEqual(self.outcomes(), ['success'])
+        self.assertEqual(self.events('thinking_cache_error')[0]['error_type'], 'OSError')
+        self.assertNotIn('secret persistence error', (self.directory/'events.jsonl').read_text())
+
     def test_healthy_and_transient_spike_do_not_dispatch(self):
         self.net.load = lambda t: 0.96 if t == 3 else 0.4
         self.c.run()

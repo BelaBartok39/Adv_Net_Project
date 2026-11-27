@@ -214,6 +214,7 @@ experiments remain separate work.
 
 - [Abilene setup, scenarios, and measured results](docs/ABILENE_BASELINE.md)
 - [Experiment results, conclusions, and report hypotheses](docs/EXPERIMENT_RESULTS.md)
+- [Experimental verified action memory for Jev](docs/THINKING_CACHE.md)
 - [NetConfArena comparison and proposed external Jev evaluation](docs/NETCONF_ARENA_COMPARISON.md)
 - [Visualizer and replay](docs/VISUALIZER.md)
 - [Decision pipeline and partner interfaces](docs/DECISION_PIPELINE.md)

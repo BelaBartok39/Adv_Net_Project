@@ -25,6 +25,7 @@ from .providers import safe_reply_metadata
 from .evidence_summary import path_summary
 from .stability_policy import ConfigurationChange, StabilityPolicy
 from .trial import acceptance_limits
+from .catalog import catalog_hash
 
 
 class Settings(Contract):
@@ -118,13 +119,31 @@ class EngineProvider:
     catalog: dict | None = None
     threshold: float = 0.9
     llm_evidence: str = 'raw'
+    thinking_cache: object = None
 
     def __call__(self, mode, observation, feedback, attempt):
         if mode == 'jev_llm' and self.screener is None:
             raise ValueError('Jev mode requires a screener')
+        catalog = dict(self.catalog or {})
+        cache_error = None
+        learned = {}
+        if self.thinking_cache is not None:
+            try:
+                learned = self.thinking_cache.eligible(observation)
+                # Reserve the same two routing choices as the public catalog.
+                learned = {k: v for k, v in learned.items() if k not in catalog}
+                learned = dict(list(learned.items())[:max(0, 253-len(catalog))])
+                catalog.update(learned)
+            except Exception as error:
+                cache_error = type(error).__name__
         engine = DecisionEngine(self.screener if mode == 'jev_llm' else None,
-                                self.llm, self.catalog or {}, self.threshold, llm_evidence=self.llm_evidence)
-        return engine.decide(observation, feedback, attempt)
+                                self.llm, catalog, self.threshold, llm_evidence=self.llm_evidence)
+        result = engine.decide(observation, feedback, attempt)
+        if self.thinking_cache is not None:
+            result['thinking_cache'] = dict(mode=self.thinking_cache.mode, binding=self.thinking_cache.binding,
+                                           catalog_sha256=catalog_hash(catalog), eligible_actions=list(learned),
+                                           error_type=cache_error)
+        return result
 
 
 def _infer(provider, args, destination, *, timed=False):
@@ -171,6 +190,10 @@ def _infer(provider, args, destination, *, timed=False):
             if isinstance(error_type, str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,63}', error_type):
                 data['calls'][-1]['error_type'] = error_type
         data['threshold'] = result.get('threshold')
+        # These fields are controller-generated, not copied from provider prose.
+        if isinstance(provider, EngineProvider):
+            data['thinking_cache'] = result.get('thinking_cache')
+            data['selected_action'] = result.get('selected_action')
         data['selected_probability'] = result.get('screening', {}).get('selected_probability')
         if data['route'] not in ('no_change', 'escalate'):
             data['route'] = 'catalog' if data['route'] else None
@@ -488,6 +511,7 @@ class PersistentController:
                                started+timeout, job, directory)
 
     def finish(self, pending, result):
+        decision_result = result
         self.event('decision_result', opportunity=pending.token, intervention=pending.identifier,
                    elapsed_seconds=self.clock.monotonic()-pending.started,
                    status=result['status'], metrics=result.get('metrics'), calls=result.get('calls'), route=result.get('route'),
@@ -495,7 +519,8 @@ class PersistentController:
                    model_ms=result.get('elapsed_ms'), error_type=result.get('error_type'),
                    llm_evidence=result.get('llm_evidence'), llm_input_sha256=result.get('llm_input_sha256'),
                    error_stage=result.get('error_stage'), provider_error_code=result.get('provider_error_code'),
-                   http_status=result.get('http_status'), validation_error_types=result.get('validation_error_types'))
+                   http_status=result.get('http_status'), validation_error_types=result.get('validation_error_types'),
+                   thinking_cache=result.get('thinking_cache'), selected_action=result.get('selected_action'))
         self.transition('proposal_assessment', opportunity=pending.token)
         try:
             if result['status'] != 'decision_complete' or not result.get('proposal'):
@@ -562,6 +587,19 @@ class PersistentController:
                                        lambda a, b: self.change(pending.identifier, a, b))
         self.policy.complete_intervention(pending.identifier, result)
         self.mutation_started = result.status == 'rollback_unconfirmed'
+        cache = getattr(self.decision, 'thinking_cache', None)
+        if cache is not None:
+            try:
+                update = cache.observe(observation=pending.observation, proposal=plan.proposal,
+                                       decision=decision_result, status=result.status, reason=result.evidence,
+                                       runtime=runtime, trial=str(self.journal.root.resolve()),
+                                       intervention=pending.identifier, before_id=plan.action.before_state,
+                                       after_id=plan.action.after_state)
+            except Exception as error:
+                self.event('thinking_cache_error', error_type=type(error).__name__)
+            else:
+                if update:
+                    self.event('thinking_cache_update', **update)
         if result.status == 'rejected':
             self.feedback(pending.identifier, 'decision' if runtime else 'verification', result.evidence, plan=plan,
                           measurements={'runtime': runtime} if runtime else None)

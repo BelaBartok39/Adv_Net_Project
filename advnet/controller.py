@@ -24,6 +24,8 @@ from .persistent_controller import Budget, Clock, EngineProvider, Journal, Persi
 from .providers import Jev, LLM
 from .stability_policy import PolicyConfig, StabilityPolicy
 from .trial import ProcessVerifier, snapshot
+from .thinking_cache import ThinkingCache
+from .pipeline import PROMPT_VERSION
 
 
 def duration(value):
@@ -180,12 +182,19 @@ def main(argv=None, *, session_hook=None):
     cli.add_argument('--base-url', default=os.environ.get('LLM_BASE_URL'))
     add_llm_options(cli)
     cli.add_argument('--catalog', type=Path)
+    cli.add_argument('--thinking-cache', type=Path, help='Experimental verified-action SQLite memory')
+    cli.add_argument('--cache-mode', choices=['off', 'collect', 'adaptive', 'frozen'], default='off',
+                     help='collect: quarantine/promote; adaptive: learn and reuse; frozen: reuse without learning')
     cli.add_argument('--interval', type=duration, default=10)
     cli.add_argument('--window-seconds', type=int, default=6)
     cli.add_argument('--setup-timeout', type=duration, default=600)
     cli.add_argument('--inference-timeout', type=duration, default=45)
     args = cli.parse_args(argv)
     validate_llm_options(args, cli)
+    if (args.cache_mode != 'off') != (args.thinking_cache is not None):
+        cli.error('Use --thinking-cache PATH with --cache-mode collect, adaptive or frozen')
+    if args.observe_only and args.cache_mode != 'off':
+        cli.error('Thinking cache requires an active controller')
     if args.resume and args.output is None:
         cli.error('--resume requires --output')
     if not 2 <= args.window_seconds <= 30 or not args.window_seconds <= args.interval <= 300:
@@ -204,6 +213,13 @@ def main(argv=None, *, session_hook=None):
         manifest = json.loads(args.manifest.read_text())
         schedule = load_schedule(args.workload.read_bytes(), manifest)[0] if args.workload else None
         catalog = experiment_catalog(manifest, args.catalog)
+        cache_binding = fingerprint(dict(version=1, source='live', manifest=manifest, catalog=catalog_hash(catalog),
+                                        prompt=PROMPT_VERSION, model=args.model, jev_model=args.sysone_model,
+                                        evidence=args.llm_evidence, provider=args.openrouter_provider,
+                                        max_output_tokens=args.max_output_tokens, base_url=args.base_url))
+        cache = ThinkingCache(args.thinking_cache, cache_binding, args.cache_mode) if args.thinking_cache else None
+        if cache and cache.mode == 'frozen' and not any(row['status'] == 'active' for row in cache.summary()):
+            raise ValueError('Frozen thinking cache has no active entries for this protocol/model binding')
         lab, clock, stop = Lab(manifest), Clock(), Event()
         settings = Settings(mode='jev_llm' if args.system_one == 'jev' else 'llm_only',
                             source='live', duration=args.duration, interval=args.interval,
@@ -224,6 +240,9 @@ def main(argv=None, *, session_hook=None):
                       'openrouter_provider': args.openrouter_provider,
                       'llm_evidence': args.llm_evidence,
                       'workload_sha256': fingerprint(schedule.model_dump(mode='json')) if schedule else None}
+        if cache:
+            parameters['thinking_cache'] = {'path': str(cache.path), 'mode': cache.mode,
+                                            'binding': cache.binding, 'frozen_sha256': cache.frozen_sha256}
         oracle = ProcessVerifier([sys.executable, '-m', 'advnet.batfish_gate'])
         executor = VerifiedExecutor(lab, oracle, None, manifest['lab'] + ':' + fingerprint(manifest),
                                     healthy_configs={}, normalize=normalize_readback,
@@ -231,7 +250,8 @@ def main(argv=None, *, session_hook=None):
         llm = LLM('openrouter', args.model, min(60, args.inference_timeout), args.max_output_tokens, args.base_url,
                   endpoint_provider=args.openrouter_provider)
         jev = Jev(args.sysone_model, 10) if args.system_one == 'jev' else None
-        controller = PersistentController(settings, None, EngineProvider(llm, jev, catalog, llm_evidence=args.llm_evidence), executor,
+        controller = PersistentController(settings, None, EngineProvider(llm, jev, catalog, llm_evidence=args.llm_evidence,
+                                                                         thinking_cache=cache), executor,
                                           Journal(output), clock=clock, policy=policy, cancel=stop)
         summary = {'output': str(output), 'mode': settings.mode, 'observe_only': args.observe_only,
                    'duration_seconds': args.duration}
