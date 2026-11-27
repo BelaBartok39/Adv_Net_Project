@@ -12,7 +12,7 @@ after Batfish accepts it, runtime checks accept its measured effect, and final
 configuration readback confirms the deployment. Rejected, rolled-back,
 unconfirmed, missing-measurement and synthetic outcomes cannot seed the cache.
 
-A new entry starts in quarantine. The **same patch in the same context** must
+A new entry starts in quarantine. The **same patch under compatible contexts** must
 succeed in at least two distinct controller output directories before becoming
 active. Retries and resumes within one directory count once. This is a minimum
 replication rule, not proof of safety or causal improvement. Two runs may produce
@@ -40,12 +40,19 @@ evidence mode, endpoint/provider settings and output budget. Reuse also requires
 matching normalized full pre-change configuration, interface inventory,
 topology, requirements, objective, demand profile, shaping fingerprint,
 intervention kind, health flags, failed host pairs, mismatched OSPF adjacencies,
-performance-health/latency alarm state, affected links, measured slow-pair set
-and metric-definition scope. Timestamps, observation IDs and demand-epoch IDs
+performance-health/latency alarm state, affected links and metric-definition
+scope. Those conditions remain exact. Matching version 2 allows limited noise
+in the measured slow-pair set: the intersection divided by the union must be at
+least 90%, against **every** accepted training context. Both sets may be empty;
+an empty set cannot match a nonempty set. Opposite directions are distinct pairs.
+The prototype and every accepted context are retained, preventing gradual
+expansion through a chain of similar cases. Different typed patches never
+share success counts. Timestamps, observation IDs and demand-epoch IDs
 are excluded to allow recurrence across separate runs.
 
 Slow-pair matching compares each observed pair RTT against the current aggregate
 latency limit solely as a matching feature; it is not a per-pair acceptance SLA.
+The 90% cutoff is an experimental heuristic, not a validated fault classifier.
 Matching symptoms does not identify a root cause or guarantee a correct action.
 The exact configuration guard intentionally limits transfer to new topology or
 configuration states. Live validation remains necessary on every use.
@@ -129,8 +136,10 @@ evaluation cost and amortized totals. Analyze convergence and verification time
 separately from Jev/LLM time. A faster classifier does not imply the same speedup
 in total network recovery.
 
-Current validation is offline lifecycle, inference and controller integration
-coverage. No live training, promotion or speed/cost benefit is claimed yet.
+Version 1 completed live collection trials, documented in the experiment
+report. Version 2 has offline lifecycle, inference and controller integration
+coverage plus a separate live reference-readiness check. Live version-2 training,
+promotion, reuse and speed/cost benefits remain unmeasured.
 
 ## Prepared automated training pilot
 
@@ -157,3 +166,36 @@ requires a fresh cache on initial launch and preserves completed prefixes with
 `--resume`; incomplete trials require inspection rather than silent reruns.
 Frozen evaluation is not part of this pilot. No live pilot has been executed by
 the agent.
+
+## Matching version 2 and fresh training
+
+The first live pilot collected two identical successful patches but split them
+because two marginal host-pair RTTs changed classification. Version 2 keeps the
+structural guards exact and permits at most the disagreement represented by a
+90% minimum directed-pair Jaccard overlap. Promotion and retrieval compare with
+all accepted examples for that entry. The cutoff was selected after diagnosing
+version 1, so evaluation must be prospective rather than presented as an
+independent confirmation on the original data.
+
+Preparation: `runs/thinking-cache-training-v2-20261127T234421Z/plan.json`.
+This uses a new empty cache and two independent 20-minute collection trials,
+with the same timing, models, traffic and safety checks as the original pilot.
+Version 1 entries are neither imported nor promoted. The original database and
+snapshots remain archived; version 2 also records each accepted context in
+`validation_contexts` for audit. The protocol version is part of both context and
+model/protocol binding. Frozen evaluation follows only after real promotion.
+
+## Further research ideas, not implemented
+
+A strategy catalog could store a conditional intent such as avoiding a degraded
+link while preserving delivery. Jev would select the strategy, a deterministic
+planner would derive typed OSPF changes for the current configuration, and the
+existing verifier/executor would evaluate the result. This might transfer more
+widely than memorizing numerical patches, but applicability and planner behavior
+would require separate validation.
+
+A shadow stage could record Jev's choices while the LLM still controls the trial,
+and check those candidates in Batfish without deploying them. This could expose
+scope and policy errors before live reuse. Batfish alone cannot establish actual
+latency/delivery improvement; shadow inference adds calls and its cost must be
+reported. Neither proposal is included in the current matching experiment.

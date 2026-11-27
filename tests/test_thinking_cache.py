@@ -11,7 +11,7 @@ import unittest
 from advnet.contracts import Observation, Proposal
 from advnet.persistent_controller import EngineProvider, _infer
 from advnet.providers import MockJev, MockLLM
-from advnet.thinking_cache import ThinkingCache, context, main
+from advnet.thinking_cache import ThinkingCache, context, contexts_match, VERSION, main
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -73,6 +73,95 @@ class ThinkingCacheTests(unittest.TestCase):
         raw = provider('jev_llm', self.obs, [], 1)
         self.assertEqual(raw['handoff'], 'verification_required')
         self.assertIsNone(raw['repair_success'])
+
+    def symptom_observation(self, indexes):
+        obs = self.obs.model_copy(deep=True)
+        obs.measurements['pairs'] = [dict(source=f'n{i}', destination='target', rtt_avg_ms=87.0)
+                                     for i in indexes]
+        return obs
+
+    def test_threshold_noise_groups_identical_patch_and_preserves_each_context(self):
+        first = self.symptom_observation(range(48))
+        second = first.model_copy(deep=True)
+        # Two near-threshold pairs switch classification, reproducing the
+        # failure mode in the first live pilot (46/48 overlap).
+        for pair in second.measurements['pairs'][-2:]:
+            pair['rtt_avg_ms'] = 13.2
+        a = self.cache.observe(**dict(self.args, observation=first))
+        self.assertEqual(a['status'], 'quarantine')
+        b = self.cache.observe(**dict(self.args, observation=second, trial='second'))
+        self.assertEqual(a['action'], b['action'])
+        self.assertEqual(b['status'], 'active')
+        self.assertIn(a['action'], self.cache.eligible(first))
+        self.assertIn(a['action'], self.cache.eligible(second))
+        with closing(sqlite3.connect(self.path)) as db:
+            rows = db.execute('SELECT context FROM validation_contexts').fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertNotEqual(rows[0], rows[1])
+        # Tolerance never substitutes for the independent-success rule.
+        with TemporaryDirectory() as folder:
+            cache = ThinkingCache(Path(folder)/'db', 'protocol-A', 'adaptive')
+            cache.observe(**dict(self.args, observation=first))
+            result = cache.observe(**dict(self.args, observation=second, intervention='another-attempt'))
+            self.assertEqual(result['independent_successes'], 1)
+            self.assertFalse(cache.eligible(second))
+
+    def test_different_fault_symptoms_and_structural_guards_do_not_merge(self):
+        first = self.symptom_observation(range(48))
+        self.cache.observe(**dict(self.args, observation=first))
+        different = self.symptom_observation(range(48,96))
+        result = self.cache.observe(**dict(self.args, observation=different, trial='second'))
+        self.assertEqual(result['status'], 'quarantine')
+        self.assertEqual(len(self.cache.summary()), 2)
+        changed = first.model_copy(deep=True)
+        changed.measurements['demand_id'] = 'different'
+        self.assertFalse(contexts_match(context(first), context(changed)))
+        left, right = context(first), context(first)
+        left['slow_pairs'] = []
+        self.assertFalse(contexts_match(left, right))
+        right['slow_pairs'] = []
+        self.assertTrue(contexts_match(left, right))
+
+    def test_matching_cannot_drift_away_from_any_accepted_training_example(self):
+        a = self.symptom_observation(range(20))
+        b = self.symptom_observation(range(1,21))
+        c = self.symptom_observation(range(-1,19))
+        self.assertTrue(contexts_match(context(a), context(b)))
+        self.assertTrue(contexts_match(context(a), context(c)))
+        self.assertFalse(contexts_match(context(b), context(c)))
+        first = self.cache.observe(**dict(self.args, observation=a))
+        second = self.cache.observe(**dict(self.args, observation=b, trial='second'))
+        self.assertEqual(first['action'], second['action'])
+        self.assertTrue(self.cache.eligible(a))
+        self.assertFalse(self.cache.eligible(c))
+        third = self.cache.observe(**dict(self.args, observation=c, trial='third'))
+        self.assertNotEqual(first['action'], third['action'])
+        self.assertEqual(third['status'], 'quarantine')
+
+    def test_similar_symptoms_do_not_combine_different_patches(self):
+        first = self.cache.observe(**self.args)
+        proposal = self.proposal.model_copy(deep=True)
+        proposal.changes[0].value += 1
+        second = self.cache.observe(**dict(self.args, proposal=proposal, trial='second'))
+        self.assertNotEqual(first['action'], second['action'])
+        self.assertEqual(second['status'], 'quarantine')
+        self.assertFalse(self.cache.eligible(self.obs))
+
+    def test_old_matching_version_is_neither_retrieved_nor_counted(self):
+        current = context(self.obs)
+        old = dict(current, version=VERSION-1)
+        self.assertFalse(contexts_match(old, current))
+        name = self.promote()
+        with self.cache.database(write=True) as db:
+            db.execute('UPDATE entries SET id=?, context=? WHERE id=?', ('learned_legacy',json.dumps(old),name))
+            db.execute('UPDATE evidence SET id=? WHERE id=?', ('learned_legacy',name))
+            db.execute('UPDATE validation_contexts SET id=?, context=? WHERE id=?',
+                       ('learned_legacy',json.dumps(old),name))
+        self.assertFalse(self.cache.eligible(self.obs))
+        result = self.cache.observe(**dict(self.args, trial='third'))
+        # Old entries cannot supply extra promotion evidence under v2.
+        self.assertEqual(result['independent_successes'], 1)
+        self.assertEqual(result['status'], 'quarantine')
 
     def test_context_changes_suppress_reuse_but_timestamp_and_epoch_do_not(self):
         self.promote()

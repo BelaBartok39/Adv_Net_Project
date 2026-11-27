@@ -24,7 +24,7 @@ from .persistent_controller import Budget, Clock, EngineProvider, Journal, Persi
 from .providers import Jev, LLM
 from .stability_policy import PolicyConfig, StabilityPolicy
 from .trial import ProcessVerifier, snapshot
-from .thinking_cache import ThinkingCache
+from .thinking_cache import ThinkingCache, VERSION as CACHE_VERSION
 from .pipeline import PROMPT_VERSION
 
 
@@ -213,7 +213,7 @@ def main(argv=None, *, session_hook=None):
         manifest = json.loads(args.manifest.read_text())
         schedule = load_schedule(args.workload.read_bytes(), manifest)[0] if args.workload else None
         catalog = experiment_catalog(manifest, args.catalog)
-        cache_binding = fingerprint(dict(version=1, source='live', manifest=manifest, catalog=catalog_hash(catalog),
+        cache_binding = fingerprint(dict(version=CACHE_VERSION, source='live', manifest=manifest, catalog=catalog_hash(catalog),
                                         prompt=PROMPT_VERSION, model=args.model, jev_model=args.sysone_model,
                                         evidence=args.llm_evidence, provider=args.openrouter_provider,
                                         max_output_tokens=args.max_output_tokens, base_url=args.base_url))

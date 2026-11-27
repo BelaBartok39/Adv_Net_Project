@@ -13,12 +13,37 @@ from .contracts import CatalogAction, Proposal
 from .eos import normalize_readback
 
 
-VERSION = 1
+VERSION = 2
+MIN_SYMPTOM_SIMILARITY = 0.90
 
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'),
                                      allow_nan=False).encode()).hexdigest()
+
+
+def contexts_match(left, right):
+    """Keep structural guards exact; tolerate limited slow-pair disagreement.
+
+    Empty sets match only each other. Opposite directions count as distinct
+    pairs when scoring overlap.
+    """
+    if left.get('version') != VERSION or right.get('version') != VERSION:
+        return False
+    if {k:v for k,v in left.items() if k != 'slow_pairs'} != {
+            k:v for k,v in right.items() if k != 'slow_pairs'}:
+        return False
+    a, b = (set(map(tuple, c['slow_pairs'])) for c in (left, right))
+    union = a | b
+    return not union or len(a & b) / len(union) >= MIN_SYMPTOM_SIMILARITY
+
+
+def supported_match(db, identifier, prototype, observed):
+    # Compare against every accepted example, never a rolling union/intersection
+    # that could gradually broaden the entry beyond its original evidence.
+    guards = [json.loads(row[0]) for row in db.execute(
+        'SELECT context FROM validation_contexts WHERE id=?', (identifier,))]
+    return all(contexts_match(guard, observed) for guard in [prototype, *guards])
 
 
 def context(observation):
@@ -89,6 +114,9 @@ class ThinkingCache:
                 db.execute('CREATE TABLE IF NOT EXISTS evidence '
                            '(id TEXT NOT NULL, trial TEXT NOT NULL, intervention TEXT NOT NULL, '
                            'outcome TEXT NOT NULL, PRIMARY KEY(id, trial, intervention))')
+                db.execute('CREATE TABLE IF NOT EXISTS validation_contexts '
+                           '(id TEXT NOT NULL, trial TEXT NOT NULL, intervention TEXT NOT NULL, '
+                           'context TEXT NOT NULL, PRIMARY KEY(id, trial, intervention))')
             yield db
             if write:
                 db.commit()
@@ -104,17 +132,19 @@ class ThinkingCache:
         if self.mode == 'collect' or not self.path.exists():
             return {}
         try:
-            key = json.dumps(context(observation), sort_keys=True)
+            observed = context(observation)
         except (ValueError, TypeError):
             return {}
         with self.database() as db:
-            rows = db.execute('SELECT id, action FROM entries WHERE binding=? AND context=? AND status=? '
-                              'ORDER BY id', (self.binding, key, 'active')).fetchall()
-        result = {}
-        for identifier, raw in rows:
-            action = CatalogAction.model_validate_json(raw)
-            action.proposal.check_scope(observation)
-            result[identifier] = action
+            rows = db.execute('SELECT id, context, action FROM entries WHERE binding=? AND status=? '
+                              'ORDER BY id', (self.binding, 'active')).fetchall()
+            result = {}
+            for identifier, guard, raw in rows:
+                if not supported_match(db, identifier, json.loads(guard), observed):
+                    continue
+                action = CatalogAction.model_validate_json(raw)
+                action.proposal.check_scope(observation)
+                result[identifier] = action
         return result
 
     def observe(self, *, observation, proposal, decision, status, reason, runtime,
@@ -165,11 +195,21 @@ class ThinkingCache:
                                                  'fresh verification and runtime acceptance remain required.'))
         identifier = 'learned_' + digest([self.binding, guard, changes])
         with self.database(write=True) as db:
+            # Group only identical typed patches under compatible contexts.
+            # Stable order keeps grouping reproducible if multiple entries fit.
+            candidates = db.execute('SELECT id, context FROM entries WHERE binding=? AND action=? '
+                                    'ORDER BY id', (self.binding, action.model_dump_json())).fetchall()
+            for existing, prototype in candidates:
+                if supported_match(db, existing, json.loads(prototype), guard):
+                    identifier = existing
+                    break
             db.execute('INSERT OR IGNORE INTO entries VALUES (?,?,?,?,?)',
                        (identifier, self.binding, json.dumps(guard, sort_keys=True),
                         action.model_dump_json(), 'quarantine'))
             db.execute('INSERT OR IGNORE INTO evidence VALUES (?,?,?,?)',
                        (identifier, trial, intervention, 'success'))
+            db.execute('INSERT OR IGNORE INTO validation_contexts VALUES (?,?,?,?)',
+                       (identifier, trial, intervention, json.dumps(guard, sort_keys=True)))
             count = db.execute('SELECT COUNT(DISTINCT trial) FROM evidence WHERE id=? AND outcome=?',
                                (identifier, 'success')).fetchone()[0]
             if count >= 2:

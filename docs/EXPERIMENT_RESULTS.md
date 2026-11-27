@@ -732,3 +732,114 @@ Cache collection is restricted to completed acceptance while the fault remains
 active; scheduled removal cannot supply promotion evidence. Source/model/power
 checks and cleanup gates are enforced by the launcher. This is a prepared
 training pilot, not a completed result or a comparative evaluation.
+
+### First live action-memory training pilot: two repairs, no promotion
+
+The prepared pilot `runs/thinking-cache-training-20261127T224720Z` completed
+both 20-minute trials. All reported configuration restoration, unchanged shaping,
+fault removal and traffic cleanup. Recorded AC/performance policy remained
+unchanged; no power-change events were present. Both used collection mode with
+no eligible learned actions, so neither trial tested a Jev cache hit.
+
+| Trial | Fault to accepted repair (s) | Runtime before → after mean probe RTT (ms) | Peak utilization before → after |
+| --- | ---: | ---: | ---: |
+| train-01 | 84.624 | 88.367 → 7.776 | 51.92% → 88.69% |
+| train-02 | 86.202 | 87.643 → 6.365 | 51.73% → 88.60% |
+
+Both first decisions escalated through Jev to Terra. Terra independently proposed
+exactly the same three cost settings: Denver Ethernet3 = 50, Kansas City
+Ethernet1 = 50, Sunnyvale Ethernet2 = 10. Both passed runtime acceptance while the
+200 ms directed fault remained injected; both receiver flows had zero measured
+loss in their accepted runtime windows. Recovery traded greater peak utilization
+for latency restoration; it was not a simultaneous utilization improvement.
+
+Despite the identical patch, `memory.sqlite` contains two quarantined entries
+with one independent success apiece, rather than one active entry with two
+successes. Direct comparison of the stored contexts found **only `slow_pairs`
+differed**. Train-01 additionally classified Denver→Seattle and Seattle→Sunnyvale
+as slow. All other stored guard fields, including configuration, demand,
+capacity, topology, policy, health flags and intervention kind, matched.
+
+This exposes brittleness in the initial exact slow-pair-set matching rule.
+Its pair threshold derives from each trial's aggregate healthy RTT baseline
+(acceptance limits approximately 14.36 and 16.82 ms), so measured pair variation
+and baseline thresholds can fragment otherwise identical training cases.
+This is an action-memory matching limitation, not differing LLM repair choices
+or a failure of Batfish/runtime acceptance. Neither entry was manually merged,
+promoted or modified during analysis. Preserve both snapshots and original
+entries when revising the matching protocol; changed rules need versioning and
+fresh prospective training/evaluation.
+
+Post-acceptance periodic windows on the repair configuration while the fault was
+still active numbered 17 and 22; median mean RTT was 6.436 and 5.828 ms.
+Ranges were 5.184–53.874 ms and 4.743–6.804 ms, respectively, with no periodic
+host/OSPF failures. Retain the elevated train-01 window; do not claim uniformly
+low post-repair latency. Train-01 also tried an optimization that reduced peak
+utilization to 51.72% but produced 91.679 ms runtime RTT; it was rejected and
+rolled back. Both trials subsequently accepted an optimization **after scheduled
+fault removal**, reducing peak utilization to about 51.73% at 7.851 and 6.136 ms
+runtime RTT. Those are post-removal outcomes, not optimizations under active
+fault, and did not create training entries.
+
+There were four saved decisions matching four dispatches in each trial, eight
+LLM calls and four Jev calls in total, no discarded inferences or cache errors.
+Recorded total charges were $0.168790220 and $0.124282762, totaling $0.293072982;
+these include later optimization/observation calls, not just the initial repairs.
+The two collection updates occurred during active fault windows. Later accepted
+post-removal optimizations did not seed entries, confirming the experiment's
+collection gate in these runs.
+
+Conclusion: typed action collection and verification worked live, and the LLM
+repeated its repair successfully. Catalog promotion and LLM avoidance remain
+unproven because the initial matching definition split the examples. Next revise
+symptom matching to tolerate incidental threshold crossings while retaining
+configuration/demand/policy scope and all deployment checks, then run fresh
+training followed by frozen evaluation. Do not relax the two-independent-success
+requirement simply to obtain a cache hit.
+
+### Matching version 2: prospective correction and readiness audit
+
+The action-memory context/protocol version is now 2. Configuration, topology,
+inventory, objective, policy, demand, capacity, health-failure identities,
+performance alarm, intervention kind and metric scope remain exact. Only the
+slow directed-pair set is approximate: Jaccard overlap must be at least 90%
+against every accepted context associated with an entry. Different patches
+never share success counts; the two-independent-trial rule and executor guards
+remain unchanged. All accepted contexts are retained, preventing a chain of
+pairwise similar observations from gradually broadening an entry.
+
+An offline diagnostic applied this definition to copies of the two archived
+version-1 contexts: the patches were identical, overlap was 46/48 = 95.833%, and
+the v2 definitions matched. This is a retrospective diagnostic, not promotion or
+a new live result. Both original entries remain quarantined. The threshold is a
+heuristic chosen after the pilot failure; fresh training and held-out evaluation
+are required to assess it.
+
+New preparation: `runs/thinking-cache-training-v2-20261127T234421Z/plan.json`.
+It uses a new empty cache and unchanged two-by-20-minute training protocol.
+Old evidence is not imported. The plan records the prior database/snapshot
+hashes for provenance. Tests cover threshold crossings, dissimilar symptoms,
+different patches, independent-trial counting, context drift, version isolation,
+frozen snapshots, deployment handoff, and cache failures. The complete suite
+passed 535 tests with six skipped. The prepared launcher passed offline execution,
+source-pin, timing, resume and unconfirmed-cleanup checks; no model calls were made.
+
+A separate live readiness check uses the explicitly labelled reference-validation
+arm, not inference or catalog training:
+`runs/thinking-cache-v2-readiness-20261127T234421Z`. Its results and cleanup must
+be confirmed before starting the new training campaign.
+
+The nonbillable live reference-readiness check completed successfully. The
+initial split passed Batfish/runtime acceptance; injected delay produced
+88.023 ms mean probe RTT versus the 5.689 ms accepted-split reference. The
+explicit reference action passed three recovery windows, with last mean RTT
+4.774 ms. Cleanup confirmed configuration restoration, unchanged shaping and
+fault removal. All 22 Abilene containers and Batfish were running. Final AC/
+performance policy matched the prepared requirements. These validate the test
+apparatus and known solution, not natural model choices or a v2 cache hit.
+
+Audit evidence is saved at
+`runs/thinking-cache-training-v2-20261127T234421Z/readiness-audit.json`.
+The new cache and trial outputs were confirmed absent, source and launcher pins
+matched, and no LLM/Jev calls were made during the audit. Fresh training is ready;
+no live version-2 learning outcome is available yet.
