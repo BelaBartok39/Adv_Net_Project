@@ -94,16 +94,20 @@ class RecoveryExperimentTests(unittest.TestCase):
                 return []
 
             def remove(self):
+                self_test.assertFalse(cache.collecting)
                 removed.set()
 
         with TemporaryDirectory() as folder, patch('advnet.recovery_experiment.LinkDelay', FakeDelay):
-            owner = SimpleNamespace(stop=Event())
+            self_test = self
+            cache = SimpleNamespace(collecting=True)
+            owner = SimpleNamespace(stop=Event(), decision=SimpleNamespace(thinking_cache=cache))
             collector = SimpleNamespace(lab=None)
             with self.assertRaisesRegex(RuntimeError, 'synthetic cancellation'):
                 with fault_session(Path(folder), 200, 0, 180, owner, collector, None):
                     self.assertTrue(applied.wait(1))
                     raise RuntimeError('synthetic cancellation')
             self.assertTrue(removed.is_set())
+            self.assertFalse(cache.collecting)
             events = [json.loads(l)['event'] for l in (Path(folder) / 'fault-events.jsonl').read_text().splitlines()]
             self.assertEqual(events[-1], 'fault_removed')
 
@@ -178,6 +182,48 @@ class RecoveryExperimentTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 main(['--arm', 'observe', '--output', str(root), '--fault-hold', '24h'])
             self.assertFalse(root.exists())
+
+    def test_training_options_require_active_arm_and_sufficient_runtime(self):
+        cases = [['--arm','observe','--thinking-cache','memory.sqlite','--cache-mode','collect'],
+                 ['--arm','jev','--thinking-cache','memory.sqlite'],
+                 ['--arm','jev','--cache-mode','collect'],
+                 ['--arm','jev','--duration','6m','--fault-after','2m','--fault-hold','5m']]
+        for case in cases:
+            with TemporaryDirectory() as folder, redirect_stderr(StringIO()):
+                with patch('advnet.recovery_experiment.Lab') as lab, self.assertRaises(SystemExit):
+                    main(['--output',str(Path(folder)/'unused'), *case])
+                lab.assert_not_called()
+                self.assertFalse((Path(folder)/'unused').exists())
+
+    def test_twenty_minute_training_forwards_cache_and_schedules_fault(self):
+        manifest = json.loads(Path('topologies/abilene.json').read_text())
+        capacities = {f'{link[side]}:{link[side + "_interface"]}': 70
+                      for link in manifest['links'] for side in ('a', 'b')}
+        ns = SimpleNamespace(descriptors={'den':17}, capacities=lambda *args: capacities)
+        lab = SimpleNamespace(configs=lambda *args: {'sea':'fixture'}, wait_convergence=lambda *args, **kw: True)
+        def run(argv, *, session_hook):
+            with session_hook('owner', 'collector', ns):
+                pass
+            self.assertEqual(argv[argv.index('--duration')+1], '1200s')
+            self.assertEqual(argv[argv.index('--cache-mode')+1], 'collect')
+            self.assertTrue(Path(argv[argv.index('--thinking-cache')+1]).is_absolute())
+            return 0
+        with (TemporaryDirectory() as folder, redirect_stdout(StringIO()),
+              patch.dict('os.environ', dict(OPEN_ROUTER_KEY='offline-test',LLM_MODEL='mock',SYSONE_MODEL='mock')),
+              patch('advnet.recovery_experiment.Lab', return_value=lab),
+              patch('advnet.recovery_experiment.LabNamespaces.open', side_effect=lambda *args: nullcontext(ns)),
+              patch('advnet.recovery_experiment._lab_lock', side_effect=lambda *args: nullcontext()),
+              patch('advnet.recovery_experiment.setup'),
+              patch('advnet.recovery_experiment.controller.main', side_effect=run),
+              patch('advnet.recovery_experiment.fault_session', return_value=nullcontext()) as fault,
+              patch('advnet.recovery_experiment.timed_results', return_value={}),
+              patch('advnet.recovery_experiment.LinkDelay.rows', return_value=[])):
+            root = Path(folder)/'trial'
+            self.assertEqual(main(['--arm','jev','--output',str(root),'--duration','20m',
+                                   '--fault-after','2m','--fault-hold','5m','--thinking-cache',
+                                   str(Path(folder)/'memory.sqlite'),'--cache-mode','collect']), 0)
+            self.assertEqual(fault.call_args.args[2:4], (120,300))
+            self.assertEqual(json.loads((root/'plan.json').read_text())['duration_seconds'],1200)
 
     def test_missing_credentials_fail_before_lab_or_output_changes(self):
         with TemporaryDirectory() as folder, patch.dict('os.environ', {}, clear=True), redirect_stderr(StringIO()):

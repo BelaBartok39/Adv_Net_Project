@@ -210,6 +210,9 @@ def fault_session(root, delay_ms, after, hold, owner, collector, namespaces):
     stop, errors = Event(), []
     delay = LinkDelay(collector.lab, namespaces, delay_ms)
     events = root / 'fault-events.jsonl'
+    cache = getattr(getattr(owner, 'decision', None), 'thinking_cache', None)
+    if cache is not None:
+        cache.collecting = False
 
     def worker():
         try:
@@ -218,6 +221,8 @@ def fault_session(root, delay_ms, after, hold, owner, collector, namespaces):
             record(events, event='fault_apply_started')
             rows = delay.apply()
             record(events, event='fault_applied', qdiscs=rows)
+            if cache is not None:
+                cache.collecting = True
             print('Injected Denver→Kansas City delay.', flush=True)
             stop.wait(hold)
         except BaseException as error:
@@ -225,6 +230,8 @@ def fault_session(root, delay_ms, after, hold, owner, collector, namespaces):
             record(events, event='fault_error', error_type=type(error).__name__)
             owner.stop.set()
         finally:
+            if cache is not None:
+                cache.collecting = False
             try:
                 record(events, event='fault_remove_started')
                 delay.remove()
@@ -288,13 +295,25 @@ def main(argv=None):
     cli.add_argument('--delay-ms', type=int, default=200, metavar='100..300')
     cli.add_argument('--fault-hold', type=controller.duration, default=180,
                      help='Delay hold time in timed arms, e.g. 3m or 5m (default: 3m)')
+    cli.add_argument('--fault-after', type=controller.duration, default=60)
+    cli.add_argument('--duration', type=controller.duration,
+                     help='Total timed runtime; must include baseline, fault hold and at least 2m afterward')
+    cli.add_argument('--thinking-cache', type=Path)
+    cli.add_argument('--cache-mode', choices=['off', 'collect', 'adaptive', 'frozen'], default='off')
     cli.add_argument('--match', type=Path, help='Require the same protocol and initial lab state as this plan.json')
     controller.add_llm_options(cli)
     args = cli.parse_args(argv)
     controller.validate_llm_options(args, cli)
     if not 100 <= args.delay_ms <= 300:
         cli.error('--delay-ms must be from 100 to 300')
-    duration_seconds = 60 + args.fault_hold + 120
+    if (args.cache_mode != 'off') != (args.thinking_cache is not None):
+        cli.error('Use --thinking-cache PATH with --cache-mode collect, adaptive or frozen')
+    if args.cache_mode != 'off' and args.arm not in ('jev', 'llm'):
+        cli.error('Thinking cache requires a Jev or LLM active arm')
+    minimum_duration = args.fault_after + args.fault_hold + 120
+    duration_seconds = args.duration if args.duration is not None else minimum_duration
+    if duration_seconds < minimum_duration:
+        cli.error('--duration must include fault-after, fault-hold and at least 2m afterward')
     if duration_seconds > 86400:
         cli.error('Fault hold plus the 60s baseline and 120s post-fault period must fit within 24h')
     duration_seconds = int(duration_seconds) if duration_seconds == int(duration_seconds) else duration_seconds
@@ -306,11 +325,14 @@ def main(argv=None):
     lab, clock = Lab(manifest), Clock()
     original = None
     summary = {'arm': args.arm, 'delay_ms': args.delay_ms, 'duration_seconds': duration_seconds,
-               'fault_after_seconds': 60, 'fault_hold_seconds': args.fault_hold,
+               'fault_after_seconds': args.fault_after, 'fault_hold_seconds': args.fault_hold,
                'scope': 'Known setup split; natural decisions in timed arms',
                'status': 'failed', 'configs_restored': False, 'shaping_unchanged': False,
                'fault_cleared': False}
     plan = {**summary, 'manifest_sha256': fingerprint(manifest),
+            'thinking_cache': {'path': str(args.thinking_cache.resolve()), 'mode': args.cache_mode,
+                               'collection_scope': 'Only accepted interventions completed while fault is active'}
+            if args.thinking_cache else None,
             'llm_request_settings': {'openrouter_provider': args.openrouter_provider,
                                      'max_output_tokens': args.max_output_tokens,
                                      'llm_evidence': args.llm_evidence},
@@ -352,10 +374,12 @@ def main(argv=None):
                             '--max-output-tokens', str(args.max_output_tokens), '--llm-evidence', args.llm_evidence]
             if args.openrouter_provider:
                 command_line += ['--openrouter-provider', args.openrouter_provider]
+            if args.thinking_cache:
+                command_line += ['--thinking-cache', str(args.thinking_cache.resolve()), '--cache-mode', args.cache_mode]
             if args.arm == 'observe':
                 command_line.append('--observe-only')
             result = controller.main(command_line, session_hook=lambda owner, collector, ns:
-                                     fault_session(root, args.delay_ms, 60, args.fault_hold, owner, collector, ns))
+                                     fault_session(root, args.delay_ms, args.fault_after, args.fault_hold, owner, collector, ns))
             if result:
                 raise RuntimeError('Controller exited ' + str(result))
             summary.update(timed_results(root))

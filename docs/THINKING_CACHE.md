@@ -131,3 +131,29 @@ in total network recovery.
 
 Current validation is offline lifecycle, inference and controller integration
 coverage. No live training, promotion or speed/cost benefit is claimed yet.
+
+## Prepared automated training pilot
+
+Preparation: `runs/thinking-cache-training-20261127T224720Z/plan.json`.
+`run-training.py` runs two independent 20-minute Jev+Terra collection trials.
+The controlled experiment now accepts `--duration`, `--fault-after`,
+`--thinking-cache` and `--cache-mode`; the launcher uses a two-minute baseline,
+200 ms Denver-to-Kansas-City delay, five-minute hold and original 35/25 Mbps
+workload on 70 Mbps backbone shaping. All setup, fault injection/removal,
+configuration restoration and traffic cleanup are automatic. Setup may add
+several minutes to each timed trial.
+
+Collection is closed before injection and before removal starts. Only accepted
+actions completed while the fault remains injected can seed/promote entries.
+Retrieval/retirement remain independent of this collection switch. Later model
+calls are still billed and retained in the trial artifacts. After each completed
+trial, the launcher snapshots the cache if one exists and prints its entry
+statuses. Two successful trials can still produce different quarantined patches.
+
+The preparation pins configured Terra/Jev model IDs, raw evidence, output budget,
+source inventory/hashes and AC/performance power policy. It samples power each
+second and stops advancement after any deviation or unconfirmed cleanup. It
+requires a fresh cache on initial launch and preserves completed prefixes with
+`--resume`; incomplete trials require inspection rather than silent reruns.
+Frozen evaluation is not part of this pilot. No live pilot has been executed by
+the agent.

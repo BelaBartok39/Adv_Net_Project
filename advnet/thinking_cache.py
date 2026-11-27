@@ -66,6 +66,9 @@ class ThinkingCache:
         if mode not in ('collect', 'adaptive', 'frozen'):
             raise ValueError('Unknown thinking-cache mode')
         self.path, self.binding, self.mode = Path(path).resolve(), binding, mode
+        # Controlled experiments can close collection before external fault
+        # removal. Retrieval and retirement remain independent of this switch.
+        self.collecting = True
         self.frozen_sha256 = None
         if mode == 'frozen':
             self.frozen_sha256 = hashlib.sha256(self.path.read_bytes()).hexdigest()
@@ -131,6 +134,7 @@ class ThinkingCache:
                                (selected, trial, intervention, status))
             return dict(action=selected, status='retired') if changed else None
         if (status != 'success' or reason != 'verified_readback_and_runtime'
+                or not self.collecting
                 or decision.get('route') != 'escalate'
                 or decision.get('metrics', {}).get('llm_calls', 0) < 1
                 or not runtime.get('acceptance', {}).get('accepted')):

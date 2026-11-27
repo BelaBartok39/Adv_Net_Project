@@ -111,6 +111,16 @@ class ThinkingCacheTests(unittest.TestCase):
             self.assertIsNone(self.cache.observe(**args))
         self.assertFalse(self.cache.summary())
 
+    def test_external_fault_removal_closes_learning_without_disabling_retirement(self):
+        self.cache.collecting = False
+        self.assertIsNone(self.cache.observe(**self.args))
+        self.cache.collecting = True
+        name = self.promote()
+        self.cache.collecting = False
+        result = self.cache.observe(**dict(self.args, status='rolled_back',
+                                          decision=dict(selected_action=name)))
+        self.assertEqual(result['status'], 'retired')
+
     def test_failure_retires_entry_and_success_does_not_rehabilitate(self):
         name = self.promote()
         decision = dict(selected_action=name, route='catalog', metrics=dict(llm_calls=0))

@@ -723,3 +723,12 @@ evaluation and retain fixed-catalog baselines, training costs, failed selections
 and rollback outcomes. Session duration must be matched within a new study;
 20-minute sessions are not directly interchangeable with the earlier eight-minute
 latency trials.
+
+First automated training pilot prepared at
+`runs/thinking-cache-training-20261127T224720Z/plan.json`: two 20-minute Jev+Terra
+collection trials, fresh shared cache, automatic two-minute baseline and
+five-minute latency fault, unchanged 35/25 Mbps traffic and 70 Mbps shaping.
+Cache collection is restricted to completed acceptance while the fault remains
+active; scheduled removal cannot supply promotion evidence. Source/model/power
+checks and cleanup gates are enforced by the launcher. This is a prepared
+training pilot, not a completed result or a comparative evaluation.
