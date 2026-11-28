@@ -25,6 +25,24 @@ intermediate outcomes. Short API calls can complete between UI refreshes, but
 their results remain visible. Traffic is generated during measurement stages;
 quiet configuration, inference, verification, and convergence stages are normal.
 
+### Watch continuous mode
+
+The dashboard follows the continuous controller journal alongside the live
+observer. Start it with the same access to `runs/` as the controller. The
+timeline shows connectivity loss and recovery, Jev and LLM decisions, candidate
+deployment, runtime validation, and rollback. Open an intervention in the
+timeline to inspect the recorded host checks, RTT, and receiver measurements.
+
+Select a router, test host, or link to open its device details. A shutdown of
+Seattle's host-facing interface marks the host attachment, while Seattle's
+router and OSPF backbone can stay up. The host inspector timestamps its last
+attachment sample and controller reachability check separately.
+
+**Peak link rate** shows the latest directional counter sample, using kbps or
+bps for small rates. The note below keeps the peak from the continuous run
+visible while the current rate falls. Select a continuous run under **Replay
+observations** to revisit its saved health and traffic checkpoints.
+
 ### Observe an active campaign from a separate checkout
 
 Campaigns freeze Python source hashes, including visualizer modules. Keep the

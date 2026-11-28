@@ -4,6 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
+SUPPORTED_OBSERVATIONS = ('refresh_telemetry', 'routing_tables')
 
 class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
@@ -68,7 +69,10 @@ class Proposal(Contract):
     evidence: list[str] = Field(min_length=1)
     changes: list[Patch] = Field(default_factory=list, max_length=12)
     expected_effect: str = Field(min_length=1)
-    observation_requests: list[str] = Field(default_factory=list, max_length=8)
+    observation_requests: list[str] = Field(
+        default_factory=list, max_length=8,
+        description='For continuous runs, use only exact identifiers advertised in '
+                    'measurements.observation_capabilities; requests never execute arbitrary commands.')
 
     @model_validator(mode="after")
     def consistent_outcome(self):

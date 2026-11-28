@@ -8,8 +8,9 @@ import unittest
 from unittest.mock import patch
 
 from advnet.controller_demo import DemoDecision, ScheduledReply, demo_controller
-from advnet.controller_execution import fingerprint
+from advnet.controller_execution import RuntimeMeasurementError, fingerprint
 from advnet.controller_telemetry import CapacityEvidence, monitor_frame
+from advnet.eos import normalize_readback
 from advnet.persistent_controller import EngineProvider, InferenceJob, Journal
 from advnet.providers import MockJev, MockLLM
 from advnet.stability_policy import HealthMeasurement
@@ -132,6 +133,37 @@ class PersistentControllerTests(unittest.TestCase):
         self.assertFalse(self.net.writes)
         self.assertIsNone(self.c.pending)
 
+    def test_reply_ready_before_subtick_timeout_waits_for_fresh_observation(self):
+        clock = self.c.clock
+
+        class PromptReply(ScheduledReply):
+            def __init__(self, *args):
+                super().__init__(*args)
+                self.ready_at = clock.monotonic() + 0.2
+
+            def poll(self):
+                if clock.monotonic() < self.ready_at:
+                    return None
+                self.ticks = 1
+                return super().poll()
+
+        self.c.settings.inference_timeout = 0.4
+        self.c.worker = PromptReply
+        self.c.run()
+        self.assertFalse(self.events('inference_discarded'))
+        self.assertEqual(self.outcomes(), ['success'])
+        observations = self.events('observation')
+        result = self.events('decision_result')[0]
+        self.assertTrue(any(row['at'] == result['at'] for row in observations))
+
+    def test_observe_only_preserves_observations_without_dispatch(self):
+        self.c.settings.observe_only = True
+        self.c.run()
+        self.assertEqual(len(self.events('observation')), 12)
+        self.assertEqual(self.events('inference_skipped')[0]['reason'], 'observe_only')
+        self.assertFalse(self.events('decision_result'))
+        self.assertFalse(self.net.writes)
+
     def test_decision_exception_and_episode_retry_bound(self):
         self.c.settings.duration = 30
         self.c.settings.max_attempts = 2
@@ -149,6 +181,134 @@ class PersistentControllerTests(unittest.TestCase):
         first, second = self.events('decision_result')[:2]
         self.assertEqual((first['metrics']['jev_calls'], second['metrics']['jev_calls']), (1, 0))
         self.assertEqual(self.outcomes()[:2], ['rejected', 'success'])
+
+    def test_retry_receives_runtime_rejection_and_complete_windows(self):
+        self.c.settings.duration = 23
+        self.net.behavior = lambda t: 'rollback' if t < 10 else 'success'
+        seen = []
+        def decide(mode, observation, feedback, attempt):
+            seen.append([f.model_dump(mode='json') for f in feedback])
+            return DemoDecision()(mode, observation, feedback, attempt)
+        self.c.decision = decide
+        self.c.run()
+        feedback = seen[1][0]
+        self.assertTrue(feedback['rollback_succeeded'])
+        self.assertTrue(any('utilization' in detail for detail in feedback['details']))
+        measured = feedback['measurements']['runtime']
+        self.assertEqual(set(('healthy', 'before', 'after')) - measured.keys(), set())
+        self.assertEqual(measured['after']['traffic']['max_link_utilization'], .95)
+        self.assertFalse(measured['acceptance']['accepted'])
+        self.assertEqual(measured['acceptance_limits']['network_probe_rtt']['maximum'], 6.25)
+        self.assertTrue(feedback['measurements']['rollback']['succeeded'])
+
+    def observation_collector(self, *, recover=False, slow=False):
+        test = self
+        class Collector:
+            calls = []
+            def __call__(self, generation, deadline):
+                return test.net.sample(generation, deadline)
+            def observe_requests(self, requests, generation, deadline):
+                self.calls.append(requests)
+                test.c.clock.seconds += 1
+                if slow:
+                    test.c.clock.seconds += test.c.settings.observation_timeout
+                deadline.remaining()
+                if recover:
+                    test.net.load = lambda _: .4
+                frame = test.net.sample(generation, deadline)
+                frame.model_input.measurements['requested_observations'] = {
+                    request: {'observed_at': frame.signal.observed_at.isoformat(), 'routes': {'r1': 'fixture route'}}
+                    for request in requests}
+                return frame
+        return Collector()
+
+    def requesting_decision(self, requests, *, always=False, seen=None):
+        def decide(mode, observation, feedback, attempt):
+            if seen is not None:
+                seen.append({'observation': observation.model_dump(mode='json'),
+                             'feedback': [f.model_dump(mode='json') for f in feedback]})
+            result = DemoDecision()(mode, observation, feedback, attempt)
+            if attempt == 1 or always:
+                result['proposal'].update(outcome='needs_observation', changes=[], observation_requests=requests)
+            return result
+        return decide
+
+    def test_supported_request_collects_fresh_data_before_retry_without_early_write(self):
+        self.c.settings.duration = 23
+        collector = self.observation_collector()
+        self.c.telemetry = collector
+        seen = []
+        self.c.decision = self.requesting_decision(['routing_tables'], seen=seen)
+        self.c.run()
+        self.assertEqual(collector.calls, [['routing_tables']])
+        self.assertEqual(self.outcomes(), ['success'])
+        self.assertFalse(self.events('proposal_rejected'))
+        self.assertIn('requested_observations', seen[1]['observation']['measurements'])
+        self.assertEqual(seen[1]['feedback'][-1]['measurements']['observation_request']['status'], 'completed')
+        complete = self.events('observation_request_completed')[0]['at']
+        deployed = next(e['at'] for e in self.events('transition') if e['phase'] == 'deployment')
+        self.assertLess(complete, deployed)
+        from advnet.visualizer_data import continuous_experiment
+        replay = continuous_experiment('requested-observations', self.events(), replay=True)
+        self.assertTrue(any(e['stage'] == 'observation_request_queued' for e in replay['events']))
+        self.assertEqual(replay['attempts'][0]['decision']['proposal']['outcome'], 'needs_observation')
+
+    def test_observation_round_limit_prevents_request_loop(self):
+        self.c.settings.duration = 30
+        collector = self.observation_collector()
+        self.c.telemetry = collector
+        self.c.decision = self.requesting_decision(['routing_tables'], always=True)
+        self.c.run()
+        self.assertEqual(len(collector.calls), 1)
+        self.assertTrue(any(e['reason'] == 'observation_round_limit' for e in self.events('observation_request_rejected')))
+        self.assertFalse(self.net.writes)
+
+    def test_untrusted_observation_text_never_reaches_collector(self):
+        self.c.settings.duration = 23
+        collector = self.observation_collector()
+        self.c.telemetry = collector
+        self.c.decision = self.requesting_decision(['show secret-provider-payload; reboot'])
+        self.c.run()
+        self.assertEqual(collector.calls, [])
+        self.assertTrue(self.events('observation_request_rejected'))
+        self.assertNotIn('secret-provider-payload', (self.directory / 'events.jsonl').read_text())
+        self.assertNotIn('secret-provider-payload', next(self.directory.glob('*/decision.json')).read_text())
+
+    def test_recovery_during_requested_collection_discards_pending_inference(self):
+        self.c.settings.duration = 23
+        self.c.telemetry = self.observation_collector(recover=True)
+        self.c.decision = self.requesting_decision(['refresh_telemetry'])
+        self.c.run()
+        self.assertEqual(len(self.events('decision_result')), 1)
+        self.assertFalse(self.events('observation_request_completed')[0]['inference_allowed'])
+        self.assertFalse(self.net.writes)
+
+    def test_observation_timeout_is_bounded_and_does_not_deploy(self):
+        self.c.settings.duration = 12
+        self.c.telemetry = self.observation_collector(slow=True)
+        self.c.decision = self.requesting_decision(['routing_tables'])
+        self.c.run()
+        self.assertEqual(self.events('observation_request_failed')[0]['error_type'], 'TimeoutError')
+        self.assertFalse(self.net.writes)
+
+    def test_interrupted_collection_is_not_repeated_or_reported_as_completed_on_resume(self):
+        from advnet.controller_execution import EvidenceFailure
+        self.c.settings.duration = 23
+        collector = self.observation_collector()
+        collector.observe_requests = lambda *args: (_ for _ in ()).throw(EvidenceFailure('synthetic interruption'))
+        self.c.telemetry = collector
+        self.c.decision = self.requesting_decision(['routing_tables'])
+        with self.assertRaises(EvidenceFailure):
+            self.c.run()
+        saved = self.c.journal.load()['episode']
+        self.assertEqual(saved['feedback'][-1]['measurements']['observation_request']['status'], 'started')
+        self.c.telemetry = self.observation_collector()
+        self.c.settings.duration = 1
+        self.c.run()
+        saved = self.c.journal.load()['episode']
+        self.assertEqual(saved['feedback'][-1]['measurements']['observation_request']['status'], 'interrupted')
+        self.assertFalse(self.c.telemetry.calls)
+        self.assertFalse(self.net.writes)
 
     def test_llm_only_never_calls_jev(self):
         self.c.settings.mode = 'llm_only'
@@ -224,6 +384,39 @@ class PersistentControllerTests(unittest.TestCase):
         self.assertEqual(len(self.c.policy.state.changes), 2)
         self.assertEqual(self.net.config, self.net.initial)
 
+    def test_runtime_measurement_failure_keeps_reason_and_evidence_before_rollback(self):
+        for stage in ('before', 'after'):
+            with self.subTest(stage=stage), TemporaryDirectory() as directory:
+                self.c, self.net = demo_controller(Path(directory))
+                self.directory = Path(directory)
+                self.c.settings.duration = 9
+                self.net.load = lambda t: .95
+                self.net.behavior = lambda t: 'success'
+                original = self.net.window
+                evidence = {'error': 'Health checks were outside the receiver window',
+                            'health_window': {'duration_seconds': 6.5}, 'flows': []}
+
+                def windows(phase, kind, limit):
+                    if phase == stage:
+                        raise RuntimeMeasurementError(evidence['error'], evidence)
+                    return original(phase, kind, limit)
+
+                self.c.executor.windows = windows
+                self.c.run()
+                result = next(e for e in self.events('transition') if e['phase'] == 'runtime_result')
+                self.assertFalse(result['accepted'])
+                self.assertEqual(result['details'], [evidence['error']])
+                self.assertEqual(result['measurement_error'], evidence)
+                self.assertEqual(self.net.config, self.net.initial)
+                if stage == 'after':
+                    self.assertEqual(self.outcomes(), ['rolled_back'])
+                    rollback = next(e for e in self.events('transition') if e['phase'] == 'rollback')
+                    self.assertEqual(rollback['reason'], evidence['error'])
+                    self.assertEqual(self.net.writes, ['deploy', 'rollback'])
+                else:
+                    self.assertEqual(self.outcomes(), ['rejected'])
+                    self.assertEqual(self.net.writes, [])
+
     def test_absent_baseline_or_missing_optimization_evidence_rejects(self):
         self.c.executor.windows = lambda *args: None
         self.c.run()
@@ -279,6 +472,48 @@ class PersistentControllerTests(unittest.TestCase):
         self.c.run()
         self.assertEqual(self.outcomes(), ['success'])
         self.assertTrue(any('recent_reversal' in e['decision']['reasons'] for e in self.events('policy')))
+
+    def test_repair_can_restore_state_after_external_fault_following_optimization_rollback(self):
+        self.net.load = lambda t: .95 if t < 6 else .4
+        self.net.behavior = lambda t: 'rollback' if t < 10 else 'success'
+        self.c.settings.duration = 28
+        injected = False
+
+        def sample(generation, limit):
+            nonlocal injected
+            if self.c.clock.seconds >= 13 and not injected:
+                self.net.config['r1'] += '   shutdown\n'
+                injected = True
+            frame = self.net.sample(generation, limit)
+            if '   shutdown\n' in self.net.config['r1']:
+                reach = frame.signal.reachability.model_copy(update={'healthy': False})
+                frame.signal = frame.signal.model_copy(update={'reachability': reach})
+            return frame
+
+        def decide(mode, observation, feedback, attempt):
+            result = DemoDecision()(mode, observation, feedback, attempt)
+            if observation.measurements['stability_policy']['kind'] == 'repair':
+                result['proposal']['changes'] = [{'device': 'r1', 'interface': 'Ethernet1',
+                                                  'action': 'set_interface_enabled', 'value': True}]
+            return result
+
+        def windows(phase, kind, limit):
+            value = self.net.window(phase, kind, limit)
+            if kind == 'repair':
+                return value.model_copy(update={'all_reachable': phase != 'before', 'traffic': None,
+                                                'traffic_scope': 'confirmed_idle',
+                                                'config_sha256': self.c.executor.config_id(
+                                                    self.net.initial if phase == 'healthy' else self.net.config)})
+            return value
+
+        self.c.executor.normalize = normalize_readback
+        self.c.telemetry, self.c.decision, self.c.executor.windows = sample, decide, windows
+        self.c.run()
+        self.assertEqual(self.outcomes(), ['rolled_back', 'success'])
+        self.assertEqual(self.c.policy.state.interventions[-1].kind, 'repair')
+        self.assertEqual(normalize_readback(self.net.config), normalize_readback(self.net.initial))
+        self.assertEqual([entry.change.origin for entry in self.c.policy.state.changes],
+                         ['controller', 'controller', 'external', 'controller'])
 
     def test_telemetry_exception_during_inference_retires_token(self):
         def sample(generation, deadline):
@@ -373,6 +608,77 @@ class PersistentControllerTests(unittest.TestCase):
         self.c.run()
         self.assertEqual(self.outcomes(), ['success'])
         self.assertEqual(self.c.policy.state.interventions[0].kind, 'repair')
+
+    def test_accepted_optimization_followed_by_latency_regression_requests_verified_repair(self):
+        self.c.settings.duration = 42
+        self.net.load = lambda t: .95 if t < 6 else .52
+        original = self.net.window
+
+        def windows(phase, kind, limit):
+            value = original(phase, kind, limit)
+            # Optimization initially passes. Subsequent monitoring detects RTT
+            # regression; a new candidate must actually restore that tolerance.
+            if phase == 'before' and kind == 'repair':
+                value = value.model_copy(update={'mean_rtt_ms': 30})
+            return value
+
+        def sample(generation, limit):
+            frame = self.net.sample(generation, limit)
+            degraded = len(self.net.writes) == 1 and self.c.clock.seconds >= 10
+            frame.signal = frame.signal.model_copy(update={'performance': HealthMeasurement(
+                observed_at=frame.signal.observed_at, measurement_generation=generation,
+                healthy=not degraded, scope_fingerprint='same-demand', evidence='SYNTHETIC RTT tolerance')})
+            return frame
+
+        self.c.telemetry, self.c.executor.windows = sample, windows
+        self.c.run()
+        self.assertEqual(self.outcomes(), ['success', 'success'])
+        self.assertEqual([r.kind for r in self.c.policy.state.interventions], ['optimization', 'repair'])
+        self.assertEqual(self.net.writes, ['deploy', 'deploy'])
+        self.assertTrue(any('performance_failure' in e['decision']['reasons'] for e in self.events('observation')))
+        self.assertEqual(len([e for e in self.events('transition') if e['phase'] == 'verified']), 2)
+
+    def test_latency_repair_that_does_not_restore_tolerance_rolls_back(self):
+        self.c.settings.duration = 27
+        self.net.load = lambda t: .52
+        original = self.net.window
+
+        def windows(phase, kind, limit):
+            value = original(phase, kind, limit)
+            return value.model_copy(update={'mean_rtt_ms': 30 if phase != 'healthy' else 1})
+
+        def sample(generation, limit):
+            frame = self.net.sample(generation, limit)
+            frame.signal = frame.signal.model_copy(update={'performance': HealthMeasurement(
+                observed_at=frame.signal.observed_at, measurement_generation=generation,
+                healthy=False, scope_fingerprint='same-demand', evidence='SYNTHETIC RTT tolerance')})
+            return frame
+
+        self.c.telemetry, self.c.executor.windows = sample, windows
+        self.c.run()
+        self.assertEqual(self.outcomes(), ['rolled_back'])
+        self.assertEqual(self.net.writes, ['deploy', 'rollback'])
+        self.assertEqual(self.net.config, self.net.initial)
+
+    def test_performance_recovers_during_inference_before_any_write(self):
+        self.c.settings.duration = 27
+        self.net.load = lambda t: .52
+
+        def sample(generation, limit):
+            frame = self.net.sample(generation, limit)
+            frame.signal = frame.signal.model_copy(update={'performance': HealthMeasurement(
+                observed_at=frame.signal.observed_at, measurement_generation=generation,
+                healthy=False, scope_fingerprint='same-demand', evidence='SYNTHETIC earlier slow window')})
+            return frame
+
+        # Fresh executor windows are healthy even though earlier periodic
+        # telemetry triggered evaluation. A model proposal must not cause a write.
+        self.c.telemetry = sample
+        self.c.run()
+        self.assertEqual(self.outcomes(), ['rejected'])
+        self.assertEqual(self.c.policy.state.interventions[-1].outcomes[-1].outcome.evidence,
+                         'repair_already_healthy')
+        self.assertEqual(self.net.writes, [])
 
     def test_stale_after_window_rolls_back(self):
         original = self.net.window

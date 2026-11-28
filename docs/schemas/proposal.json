@@ -155,6 +155,7 @@
       "type": "string"
     },
     "observation_requests": {
+      "description": "For continuous runs, use only exact identifiers advertised in measurements.observation_capabilities; requests never execute arbitrary commands.",
       "items": {
         "type": "string"
       },

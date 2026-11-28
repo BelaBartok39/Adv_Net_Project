@@ -55,8 +55,49 @@ try{
  if(await evaluate("document.getElementById('active-calls').textContent.includes('LLM 2')"))throw new Error('Replay revealed future calls');
  await evaluate("document.getElementById('return-live').click()");
  await waitFor("document.getElementById('campaign-count').textContent==='2 / 2 complete'");
+ const continuous=join(root,'continuous-check');
+ await mkdir(continuous);
+ await json(join(continuous,'live-baseline.json'),{});
+ const journalRows=[];
+ const push=(event,phase,fields={})=>journalRows.push({event,phase,mode:'jev_llm',
+  at:new Date(Date.now()-30000+journalRows.length*1000).toISOString(),...fields});
+ const writeContinuous=()=>writeFile(join(continuous,'events.jsonl'),journalRows.map(row=>JSON.stringify(row)).join('\n')+'\n');
+ const observation=(failed_pairs,rate)=>push('observation','monitoring',{
+  runtime:{failed_pairs,all_reachable:!failed_pairs.length,ospf_healthy:true,mismatched_ospf:[]},
+  measurement:{links:[{link_id:'sea:Ethernet1',throughput_mbps:rate}]}
+ });
+ const endpoints=['sva','lax','den','kcy','hou','atl','ind','chi','was','nyc'];
+ push('transition','monitoring');
+ observation([],32);
+ await writeContinuous();
+ await waitFor("document.getElementById('active-trial').textContent==='continuous-check' && document.getElementById('peak-rate').textContent==='32.00'");
+ await waitFor("[...document.querySelectorAll('.backbone-flow')].filter(el=>el.style.opacity==='0.65').length===1");
+ observation(endpoints.flatMap(site=>[['sea',site],[site,'sea']]),.0008);
+ push('transition','decision',{intervention:'try-1'});
+ await writeContinuous();
+ await waitFor("document.getElementById('pair-count').textContent==='90' && document.getElementById('timeline').textContent.includes('Host connectivity lost')");
+ await waitFor("document.getElementById('peak-unit').textContent.trim()==='bps' && document.getElementById('peak-note').textContent.includes('Run peak 32.00 Mbps')");
+ await waitFor("[...document.querySelectorAll('.backbone-flow')].every(el=>el.style.opacity==='0')");
+ await evaluate("document.querySelector('.host[aria-label^=h-sea]').querySelector('rect').dispatchEvent(new MouseEvent('click',{bubbles:true}))");
+ await waitFor("document.getElementById('inspector-title').textContent==='h-sea' && document.getElementById('node-state').textContent==='UNREACHABLE'");
+ await evaluate("document.querySelector('[data-tab=changes]').click();document.querySelector('.router[aria-label^=Seattle]').querySelector('rect').dispatchEvent(new MouseEvent('click',{bubbles:true}))");
+ await waitFor("document.getElementById('inspector-title').textContent==='Seattle' && !document.getElementById('device-panel').classList.contains('hidden')");
+ push('decision_result','decision',{intervention:'try-1',route:'escalate',selected_probability:.61,
+  calls:[{stage:'jev',model:'test-jev'},{stage:'llm',model:'test-llm'}]});
+ push('transition','deployment',{intervention:'try-1'});
+ push('transition','runtime_result',{intervention:'try-1',accepted:false});
+ push('transition','cooldown',{intervention:'try-1',outcome:'rolled_back',evidence:'checkpoint_readback_confirmed'});
+ await writeContinuous();
+ await waitFor("document.getElementById('candidate-state').textContent==='Candidate rolled back' && document.getElementById('active-calls').textContent.includes('Jev 1 · LLM 1')");
+ await evaluate("document.getElementById('recording').value='continuous-check';document.getElementById('load-replay').click()");
+ await waitFor("document.getElementById('connection').textContent==='REPLAY' && document.getElementById('pair-count').textContent==='110'");
+ await waitFor("!document.getElementById('timeline').textContent.includes('Candidate rolled back')");
+ await evaluate("document.getElementById('scrubber').value=document.getElementById('scrubber').max;document.getElementById('scrubber').dispatchEvent(new Event('input'))");
+ await waitFor("document.getElementById('timeline').textContent.includes('Candidate rolled back')");
+ await evaluate("document.getElementById('return-live').click()");
+ await waitFor("document.getElementById('connection').textContent==='FILES ONLY'");
  await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true},session);await sleep(200);
  const layout=await evaluate('({width:innerWidth,scroll:document.documentElement.scrollWidth})');if(layout.scroll>layout.width+1)throw new Error('Mobile overflow: '+JSON.stringify(layout));
  if(errors.length)throw new Error('Browser errors: '+errors.join(', '));
- console.log(JSON.stringify({result:'PASS',checks:['nested campaign discovery','pending decision shown','Jev probability and fallback shown','both token usage formats','automatic attempt following','live progress and model counts','replay cutoff','mobile layout'],evidence:root,screenshot:'/tmp/advnet-campaign-browser.png'}));
+ console.log(JSON.stringify({result:'PASS',checks:['nested campaign discovery','Jev and LLM results','live progress and replay cutoff','continuous host fault and rollback','router and host inspector','rate units and animation','continuous replay','mobile layout'],evidence:root,screenshot:'/tmp/advnet-campaign-browser.png'}));
 }finally{chrome?.kill('SIGTERM');server.kill('SIGTERM');}

@@ -1,5 +1,4 @@
 """Validated private fault definitions and post-trial routing evaluation."""
-import json
 from pathlib import Path
 from typing import Literal
 

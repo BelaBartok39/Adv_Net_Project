@@ -101,6 +101,65 @@ class VisualizerTests(unittest.TestCase):
         self.assertEqual(state['frame']['source'],'recorded')
         self.assertEqual(get(app,'/api/replay?run=coverage%2Ftrials%2Ftwo-jev')[0],200)
 
+    def test_continuous_journal_updates_host_health_and_keeps_rollback_evidence(self):
+        run = self.root/'continuous-test'
+        run.mkdir()
+        (run/'live-baseline.json').write_text('{}')
+        at = '2026-11-26T13:07:14+00:00'
+        failed = [[a, b] for a in MANIFEST['routers'] for b in MANIFEST['routers']
+                  if a != b and 'sea' in (a, b)]
+        rows = [
+            {'event': 'observation', 'phase': 'monitoring',
+             'runtime': {'failed_pairs': failed, 'all_reachable': False, 'ospf_healthy': True,
+                         'mismatched_ospf': []},
+             'measurement': {'links': [{'link_id': 'sea:Ethernet1', 'throughput_mbps': 0.0008}]}},
+            {'event': 'transition', 'phase': 'decision', 'intervention': 'try-1'},
+            {'event': 'decision_result', 'phase': 'decision', 'intervention': 'try-1',
+             'route': 'escalate', 'selected_probability': .59,
+             'calls': [{'stage': 'llm', 'model': 'test-model'}],
+             'metrics': {'llm_calls': 1, 'llm_input_tokens': 123}},
+            {'event': 'transition', 'phase': 'runtime_result', 'intervention': 'try-1', 'accepted': False,
+             'details': ['Loaded RTT exceeded the baseline tolerance.']},
+            {'event': 'transition', 'phase': 'cooldown', 'intervention': 'try-1',
+             'outcome': 'rolled_back', 'evidence': 'checkpoint_readback_confirmed'},
+            {'event': 'transition', 'phase': 'decision', 'intervention': 'try-2'},
+            {'event': 'policy', 'phase': 'proposal_assessment',
+             'decision': {'stage': 'proposal', 'reasons': ['no_evaluation_opportunity']}},
+        ]
+        (run/'events.jsonl').write_text(''.join(json.dumps({'at': at, 'mode': 'jev_llm', **row})+'\n'
+                                                for row in rows))
+        app = App(MANIFEST,self.root,CONFIGS,mode='files')
+        state = json.loads(get(app,'/api/state')[1])
+        experiment, frame = state['experiment'], state['frame']
+        self.assertEqual(experiment['kind'], 'continuous')
+        self.assertEqual(frame['measurement']['pair_passed'], 90)
+        self.assertEqual(frame['hosts']['h-sea']['reachability'], 'unreachable')
+        self.assertEqual(frame['hosts']['h-nyc']['reachability'], 'reachable')
+        self.assertTrue(all(link['state'] == 'up' for link in frame['links']))
+        self.assertEqual(frame['links'][0]['a_mbps'], .0008)
+        self.assertIn('reachability_failed', [event['stage'] for event in experiment['events']])
+        attempt, refused = experiment['attempts']
+        self.assertEqual(attempt['decision']['calls'][0]['usage']['input_tokens'], 123)
+        self.assertEqual(attempt['outcome'], 'rolled_back')
+        self.assertFalse(attempt['acceptance']['accepted'])
+        self.assertIn('Loaded RTT exceeded the baseline tolerance.', attempt['acceptance']['details'])
+        self.assertEqual(refused['decision_state'], 'policy_rejected')
+        self.assertEqual(experiment['events'][-1]['message'], 'no_evaluation_opportunity')
+        replay = json.loads(get(app, '/api/replay?run=continuous-test')[1])
+        self.assertEqual(replay['frames'][0]['telemetry']['hosts']['h-sea']['failed_pairs'], 20)
+
+    def test_live_router_config_reports_host_shutdown_without_marking_router_down(self):
+        app = App(MANIFEST,self.root,CONFIGS,mode='live',record=False)
+        host = MANIFEST['routers']['sea']['host']
+        config = CONFIGS['sea'].replace('interface Ethernet3\n', 'interface Ethernet3\n   shutdown\n')
+        app.latest.update(nodes={'sea': {'status': 'running', 'config': config, 'config_at': 'sample'}},
+                          hosts={host: {'status': 'running'}})
+        frame = app.state()['frame']
+        self.assertEqual(frame['hosts'][host]['attachment'], 'admin_down')
+        self.assertEqual(frame['nodes']['sea']['status'], 'running')
+        app.latest['nodes']['sea']['config'] = CONFIGS['sea']
+        self.assertEqual(app.state()['frame']['hosts'][host]['attachment'], 'enabled')
+
     def test_nested_ids_and_symlinks_cannot_escape_artifact_root(self):
         self.campaign_fixture()
         artifacts=Artifacts(self.root)

@@ -34,3 +34,34 @@ def candidate_configs(configs: dict[str, str], proposal: Proposal) -> dict[str, 
     for device in {c.device for c in proposal.changes}:
         output[device] = materialize(configs[device], [c for c in proposal.changes if c.device == device])
     return output
+
+
+def normalize_readback(configs: dict[str, str]) -> dict[str, str]:
+    """Ignore EOS formatting differences for the three supported interface settings."""
+    patterns = (r'(?:no )?shutdown', r'(?:no )?ip ospf area(?: .*|$)',
+                r'(?:no )?ip ospf cost(?: .*|$)')
+
+    def normalize(text):
+        lines = text.splitlines()
+        start = 0
+        while start < len(lines):
+            if not re.fullmatch(r'interface Ethernet\d+', lines[start]):
+                start += 1
+                continue
+            end = start + 1
+            while end < len(lines) and (not lines[end].strip() or lines[end][0].isspace()):
+                end += 1
+            body = lines[start + 1:end]
+            # Leave ambiguous or nested command sequences verbatim.
+            matches = [[line for line in body if line.startswith('   ')
+                        and re.fullmatch(pattern, line[3:])] for pattern in patterns]
+            if all(len(group) <= 1 for group in matches):
+                settings = [line for group in matches for line in group]
+                lines[start + 1:end] = [line for line in body if line not in settings]
+                end = start + 1 + len(body) - len(settings)
+                lines[end:end] = [line for line in settings if line != '   no shutdown']
+                end += len(settings) - int('   no shutdown' in settings)
+            start = end
+        return '\n'.join(lines) + '\n'
+
+    return {node: normalize(text) for node, text in configs.items()}

@@ -108,20 +108,48 @@ class DecisionProcess:
         return value
 
 
-def acceptable(current, healthy, impaired, objective):
+def acceptance_limits(healthy, objective):
+    """Describe the same global and per-receiver limits used by acceptance."""
+    traffic = healthy.get('traffic')
+    receivers = traffic.get('flows', []) if traffic and traffic.get('mode') == 'concurrent_udp' else [traffic] if traffic else []
+    return {
+        'network_probe_rtt': {'scope': 'all_required_directed_host_pairs', 'units': 'ms',
+                              'baseline': healthy['mean_rtt_ms'],
+                              'maximum': healthy['mean_rtt_ms'] * 1.25 + 5
+                              if healthy['mean_rtt_ms'] is not None else None},
+        'receivers': [{**{key: row[key] for key in ('source', 'destination', 'destination_port') if key in row},
+                       'minimum_received_mbps': row['received_mbps'] * .9,
+                       'maximum_loss_fraction': row['loss_fraction'] + .02} for row in receivers],
+        'shared_max_utilization_factor_of_before': .95 if objective == 'optimization' else None,
+    }
+
+
+def health_acceptance_details(current, healthy):
     details=[]
     if not current['all_reachable']:
         details.append('Required host connectivity or zero-loss ping checks failed.')
     if not current['ospf_healthy']:
         details.append('Required OSPF adjacencies are not all FULL.')
     if current['mean_rtt_ms'] is None or current['mean_rtt_ms'] > healthy['mean_rtt_ms']*1.25+5:
-        details.append('Idle ping latency exceeds healthy-baseline tolerance (25% plus 5 ms).')
+        details.append('Network-wide ICMP probe latency across required directed host pairs '
+                       'exceeds healthy-baseline tolerance (25% plus 5 ms); this is not per-flow latency.')
+    return details
+
+
+def receiver_acceptance_details(current, healthy):
+    details=[]
+    if not current or current['received_mbps'] < healthy['received_mbps']*0.9:
+        details.append('Delivered throughput is below 90% of the healthy baseline.')
+    if not current or current['loss_fraction'] > healthy['loss_fraction']+0.02:
+        details.append('UDP loss exceeds the healthy baseline by more than two percentage points.')
+    return details
+
+
+def acceptable(current, healthy, impaired, objective):
+    details=health_acceptance_details(current,healthy)
     if healthy['traffic']:
         t,h=current['traffic'],healthy['traffic']
-        if not t or t['received_mbps'] < h['received_mbps']*0.9:
-            details.append('Delivered throughput is below 90% of the healthy baseline.')
-        if not t or t['loss_fraction'] > h['loss_fraction']+0.02:
-            details.append('UDP loss exceeds the healthy baseline by more than two percentage points.')
+        details.extend(receiver_acceptance_details(t,h))
         if objective=='optimization':
             if not t or t['max_link_utilization'] >= impaired['traffic']['max_link_utilization']*0.95:
                 details.append('Maximum link utilization did not improve by at least 5%.')
@@ -176,17 +204,16 @@ def acceptable_concurrent(current,healthy,impaired,objective):
         return {'accepted':False,'details':['Concurrent runtime measurement rejected: '+str(error)]}
     if any(set(record)!=set(records[1]) for record in records):
         return {'accepted':False,'details':['Concurrent flow identities differ across trial stages.']}
-    failures=[]
+    failures=health_acceptance_details(current,healthy)
     for key in sorted(records[1]):
         rows=[record[key] for record in records]
         if any((row['offered_mbps'],row['seconds'])!=(rows[1]['offered_mbps'],rows[1]['seconds']) for row in rows):
             failures.append(f'{key}: configured offered load/duration changed.')
             continue
-        scoped=[{**stage,'traffic':{**row,'max_link_utilization':stage['traffic']['max_link_utilization']}}
-                for stage,row in zip((current,healthy,impaired),rows)]
-        check=acceptable(*scoped,objective)
-        if not check['accepted']:
-            failures.extend(f'{key}: {detail}' for detail in check['details'])
+        failures.extend(f'{key}: {detail}' for detail in receiver_acceptance_details(rows[0],rows[1]))
+    if (objective=='optimization' and
+            current['traffic']['max_link_utilization'] >= impaired['traffic']['max_link_utilization']*0.95):
+        failures.append('Shared maximum link utilization did not improve by at least 5%.')
     return {'accepted':not failures,'details':failures or [
         'All flows passed the existing receiver-preservation and shared-utilization thresholds.']}
 

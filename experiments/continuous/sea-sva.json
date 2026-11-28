@@ -1,0 +1,29 @@
+{
+  "duration_seconds": 1200,
+  "flows": [
+    {
+      "flow_id": "sea-sva",
+      "source": "sea",
+      "destination": "sva",
+      "offered_mbps": 15,
+      "start_seconds": 0,
+      "stop_seconds": 1200,
+      "bursts": [
+        {"start_seconds": 120, "stop_seconds": 480, "offered_mbps": 50},
+        {"start_seconds": 660, "stop_seconds": 1080, "offered_mbps": 50}
+      ]
+    },
+    {
+      "flow_id": "sea-lax",
+      "source": "sea",
+      "destination": "lax",
+      "offered_mbps": 10,
+      "start_seconds": 0,
+      "stop_seconds": 1200,
+      "bursts": [
+        {"start_seconds": 120, "stop_seconds": 480, "offered_mbps": 40},
+        {"start_seconds": 660, "stop_seconds": 1080, "offered_mbps": 40}
+      ]
+    }
+  ]
+}
