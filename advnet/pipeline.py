@@ -5,10 +5,13 @@ import math
 from datetime import datetime, timezone
 from time import perf_counter
 from uuid import uuid4
+from pydantic import ValidationError
 
 from .contracts import CatalogAction, Feedback, Observation, Proposal, render_eos
+from .providers import ProviderResponseError, safe_reply_metadata
+from .evidence_summary import path_summary
 
-PROMPT_VERSION = "eos-ospf-v1"
+PROMPT_VERSION = "eos-ospf-v2"
 
 
 def safe_provider_error(error):
@@ -22,6 +25,7 @@ def safe_provider_error(error):
         "insufficient_quota", "credit_balance_exhausted", "rate_limit_exceeded",
         "slow_down", "organization_usage_limit_exceeded", "model_not_found",
         "invalid_api_key", "billing_hard_limit_reached", "spend_limit_exceeded",
+        "output_token_limit", "empty_response", "empty_content", "unsupported_finish_reason",
     }:
         details["provider_error_code"] = code
     return details
@@ -44,7 +48,8 @@ def valid_route(value, criteria):
 
 
 class DecisionEngine:
-    def __init__(self, screener, llm, catalog: dict[str, CatalogAction], threshold=0.9, force_escalation=False):
+    def __init__(self, screener, llm, catalog: dict[str, CatalogAction], threshold=0.9, force_escalation=False,
+                 llm_evidence='raw'):
         if not math.isfinite(threshold) or not 0 <= threshold <= 1:
             raise ValueError("threshold must be between zero and one")
         if set(catalog) & {"no_change", "escalate"}:
@@ -53,6 +58,9 @@ class DecisionEngine:
         if force_escalation and screener is None:
             raise ValueError('Forced escalation requires an actual screening stage')
         self.force_escalation=force_escalation
+        if llm_evidence not in ('raw', 'path-summary'):
+            raise ValueError('Unsupported LLM evidence mode')
+        self.llm_evidence = llm_evidence
 
     def decide(self, observation: Observation, feedback: list[Feedback] | None = None, attempt=1):
         feedback = feedback or []
@@ -84,6 +92,9 @@ class DecisionEngine:
         def record(stage, reply):
             result["calls"].append({"stage": stage, "model": reply.model,
                                     "elapsed_ms": reply.elapsed_ms, "usage": reply.usage})
+            metadata = safe_reply_metadata(reply.metadata)
+            if metadata:
+                result['calls'][-1]['metadata'] = metadata
             if reply.model.startswith("mock-"):
                 result["mock"] = True
 
@@ -136,24 +147,48 @@ class DecisionEngine:
                 "insufficient, request specific observations. Keep patches small. Do not repeat a "
                 "rejected patch unless new evidence explains why it will work. No shell, management, "
                 "ACL, or arbitrary CLI changes are supported in this initial version. Proposed "
-                "changes require external verification and measured acceptance. Schema: "
+                "changes require external verification and measured acceptance. "
+                "mean_rtt_ms is the network-wide arithmetic mean of ICMP RTT across required "
+                "directed host pairs, including pairs outside the UDP workload. It is not "
+                "per-flow application latency. Restore the full declared measurement scope, "
+                "not just the workload paths. Consult metric_definitions, performance limits "
+                "and prior runtime rejection measurements. When observation_capabilities are "
+                "advertised, use needs_observation with only the exact supported identifiers "
+                "in observation_requests; do not put CLI or shell commands there. Schema: "
                 + json.dumps(Proposal.model_json_schema())
             )
             call_start = perf_counter()
+            error_stage = 'provider_request'
             try:
-                reply = self.llm.propose(system, state)
+                llm_state = state
+                if self.llm_evidence == 'path-summary':
+                    summary = path_summary(state['observation'])
+                    llm_state = {**state, 'derived_evidence_summary': summary}
+                    result['evidence_summary'] = summary
+                result['llm_evidence'] = self.llm_evidence
+                result['llm_input_sha256'] = hashlib.sha256(json.dumps(llm_state, sort_keys=True).encode()).hexdigest()
+                reply = self.llm.propose(system, llm_state)
                 record("llm", reply)
                 # Strict parsing rejects markdown, extra fields, and unsupported operations.
+                error_stage = 'proposal_parsing'
                 proposal = Proposal.model_validate_json(reply.value)
+                error_stage = 'scope_validation'
                 proposal.check_scope(observation)
                 result["proposal"] = proposal.model_dump(mode="json")
             except Exception as error:
                 result["status"] = "decision_error"
                 result["error_type"] = type(error).__name__
+                result['error_stage'] = 'provider_response' if isinstance(error, ProviderResponseError) else error_stage
+                if isinstance(error, ValidationError):
+                    result['validation_error_types'] = sorted({e['type'] for e in error.errors()})
                 result.update(safe_provider_error(error))
                 if not any(c["stage"] == "llm" for c in result["calls"]):
-                    result["calls"].append({"stage": "llm", "error_type": type(error).__name__,
-                                            "elapsed_ms": (perf_counter() - call_start) * 1000})
+                    if isinstance(error, ProviderResponseError):
+                        record('llm', error.reply)
+                        result['calls'][-1]['error_type'] = type(error).__name__
+                    else:
+                        result["calls"].append({"stage": "llm", "error_type": type(error).__name__,
+                                                "elapsed_ms": (perf_counter() - call_start) * 1000})
         if result["proposal"]:
             proposal = Proposal.model_validate(result["proposal"])
             result["eos_commands"] = render_eos(proposal)

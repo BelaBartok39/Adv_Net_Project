@@ -191,12 +191,12 @@ class Lab:
             return False
         raise TimeoutError('Routing did not stabilize inside the convergence window')
 
-    def ping_matrix(self, deadline):
+    def ping_matrix(self, deadline, *, count=3, workers=8):
         pairs = [(a,b) for a in self.routers for b in self.routers if a != b]
         def one(pair):
             a,b = pair
             result = subprocess.run(['docker','exec',self.prefix+self.routers[a]['host'],
-                                     'ping','-n','-I','eth1','-c','3','-i','0.2','-W','1',self.routers[b]['host_ip']],
+                                     'ping','-n','-I','eth1','-c',str(count),'-i','0.2','-W','1',self.routers[b]['host_ip']],
                                     capture_output=True,text=True,timeout=min(8,deadline.remaining()))
             loss = re.search(r'([\d.]+)% packet loss',result.stdout)
             rtt = re.search(r'=\s*([\d.]+)/([\d.]+)/([\d.]+)',result.stdout)
@@ -204,7 +204,7 @@ class Lab:
                 raise RuntimeError('Ping did not produce a parseable measurement: '+a+' -> '+b)
             return {'source':a,'destination':b,'reachable':result.returncode==0,
                     'loss_fraction':float(loss[1])/100,'rtt_avg_ms':float(rtt[2]) if rtt else None}
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
             return list(pool.map(one,pairs))
 
     def counters(self, deadline):

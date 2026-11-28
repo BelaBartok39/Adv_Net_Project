@@ -27,7 +27,7 @@ Recommendation = Literal[
 ]
 Reason = Literal[
     'healthy', 'congestion_pending', 'congestion_sustained', 'trigger_latched',
-    'recovery_confirmed', 'reachability_failure', 'ospf_failure', 'repair_pending',
+    'recovery_confirmed', 'reachability_failure', 'ospf_failure', 'performance_failure', 'repair_pending',
     'missing_health', 'missing_utilization', 'invalid_telemetry', 'stale_telemetry',
     'future_telemetry', 'non_increasing_observation', 'measurement_gap',
     'cooldown_active', 'urgent_repair_cooldown_exception', 'frequency_limit',
@@ -105,16 +105,18 @@ class NetworkObservation(PolicyContract):
     links: list[LinkMeasurement] = Field(default_factory=list)
     reachability: HealthMeasurement | None = None
     ospf: HealthMeasurement | None = None
+    performance: HealthMeasurement | None = None
 
     def sources(self):
         return {'health:reachability': self.reachability, 'health:ospf': self.ospf,
+                **({'health:performance': self.performance} if self.performance is not None else {}),
                 **{'link:' + link.link_id: link for link in self.links}}
 
     @model_validator(mode='after')
     def sample_order(self):
         if len({link.link_id for link in self.links}) != len(self.links):
             raise ValueError('Duplicate directed link identifiers')
-        samples = [*self.links, self.reachability, self.ospf]
+        samples = [*self.links, self.reachability, self.ospf, self.performance]
         if any(sample.observed_at > self.observed_at for sample in samples if sample is not None):
             raise ValueError('Measurement is newer than the enclosing observation')
         return self
@@ -128,6 +130,8 @@ class PolicyConfig(PolicyContract):
     congestion_seconds: Seconds = 20.0
     repair_samples: int = Field(default=2, ge=1)
     repair_seconds: Seconds = 5.0
+    performance_samples: int = Field(default=3, ge=2)
+    performance_seconds: Seconds = 20.0
     min_request_interval: float = Field(default=5.0, gt=0, le=86400)
     opportunity_seconds: float = Field(default=60.0, gt=0, le=86400)
     optimization_retry_seconds: float = Field(default=30.0, gt=0, le=86400)
@@ -198,6 +202,7 @@ class ConfigurationChange(PolicyContract):
     before_state: Identifier
     after_state: Identifier
     evidence: Identifier
+    origin: Literal['unknown', 'controller', 'external'] = 'unknown'
 
     @property
     def transition(self):
@@ -302,7 +307,7 @@ class EvaluationOpportunity(PolicyContract):
     def signal_keys(self):
         if self.kind == 'optimization':
             return ['link:' + name for name in self.links]
-        return ['health:' + name for name in ('reachability', 'ospf') if name + '_failure' in self.reasons]
+        return ['health:' + name for name in ('reachability', 'ospf', 'performance') if name + '_failure' in self.reasons]
 
 
 class PolicyState(PolicyContract):
@@ -436,7 +441,7 @@ class StabilityPolicy:
             return 'before_evidence_boundary'
         return self._freshness(sample.observed_at, now)
 
-    def _signal(self, old, sample, now):
+    def _signal(self, old, sample, now, *, performance=False):
         """Return updated state, readiness, recovery and an optional diagnostic."""
         issue = self._sample_error(sample, now)
         at = sample.observed_at
@@ -463,6 +468,8 @@ class StabilityPolicy:
                 old = SignalState()
             degraded, clear = not value, value
             samples, seconds = self.config.repair_samples, self.config.repair_seconds
+            if performance:
+                samples, seconds = self.config.performance_samples, self.config.performance_seconds
         else:
             degraded, clear = value >= self.config.congestion_high, value <= self.config.congestion_clear
             samples, seconds = self.config.congestion_samples, self.config.congestion_seconds
@@ -523,9 +530,11 @@ class StabilityPolicy:
                 return 'measurement_gap'
             return None
 
-        for name in ('reachability', 'ospf'):
+        for name in ('reachability', 'ospf', 'performance'):
             sample = getattr(latest, name)
             opening = getattr(op.opening, name)
+            if name == 'performance' and sample is None and opening is None:
+                continue
             # Unknown unrelated health is allowed for a known repair. A changed
             # health signature requires a new diagnosis, including for repairs.
             expected = opening.healthy if opening else None
@@ -641,7 +650,8 @@ class StabilityPolicy:
                 if key in sources:
                     unknown[key] = 'missing_health'
                 continue
-            signal, ready, recovered, issue = self._signal(old, sample, now)
+            signal, ready, recovered, issue = self._signal(old, sample, now,
+                                                         performance=key == 'health:performance')
             signals[key] = signal
             if issue and issue != 'measurement_gap':
                 unknown[key] = issue
@@ -688,7 +698,7 @@ class StabilityPolicy:
         elif any(value is False for value in health_values.values()):
             return self._decision(now, 'collect_observations', [*reasons, 'repair_pending'],
                                   observation_id=observation.observation_id)
-        elif unknown or len(health_values) != 2 or not observation.links:
+        elif unknown or not {'reachability', 'ospf'} <= health_values.keys() or not observation.links:
             return self._decision(now, 'insufficient_telemetry',
                                   [*reasons, *unknown.values(), *(['missing_utilization'] if not observation.links else [])],
                                   observation_id=observation.observation_id)
@@ -759,6 +769,11 @@ class StabilityPolicy:
             return self._decision(now, 'suppress_unstable_action', ['state_already_applied'], stage='proposal')
         if records and records[-1].change.after_state != candidate.before_state:
             return self._decision(now, 'insufficient_telemetry', ['state_history_mismatch'], stage='proposal')
+        # An exact repair of the latest external disturbance is a restoration.
+        # Keep prior history and every controller-originated transition in scope.
+        if (kind == 'repair' and records and records[-1].change.origin == 'external'
+                and records[-1].change.before_state == candidate.after_state):
+            records = records[:-1]
         if any(record.reversal_until > now and record.change.before_state == candidate.after_state
                and record.change.after_state == candidate.before_state for record in records):
             return self._decision(now, 'suppress_unstable_action', ['recent_reversal'], stage='proposal')
