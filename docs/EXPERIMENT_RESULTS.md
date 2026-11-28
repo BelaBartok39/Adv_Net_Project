@@ -843,3 +843,93 @@ Audit evidence is saved at
 The new cache and trial outputs were confirmed absent, source and launcher pins
 matched, and no LLM/Jev calls were made during the audit. Fresh training is ready;
 no live version-2 learning outcome is available yet.
+
+### Version 2 live training results
+
+Both trials in `runs/thinking-cache-training-v2-20261127T234421Z` completed.
+Both accepted a repair during the five-minute Denver→Kansas City delay and
+confirmed fault removal, configuration restoration, shaping and traffic cleanup.
+The power log recorded the expected AC/performance state throughout sampling.
+
+| Training trial | DEN Ethernet3 / KCY Ethernet1 cost | SVA Ethernet2 cost | Fault to acceptance | Mean probe RTT before → after repair | Peak utilization before → after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 01 | 100 / 100 | 10 | 162.67 s | 87.83 → 5.55 ms | 51.51% → 88.57% |
+| 02 | 41 / 41 | 10 | 94.10 s | 86.98 → 5.41 ms | 51.83% → 88.81% |
+
+Both accepted measurement windows recorded zero loss on both UDP flows.
+Both trials permitted repair evaluation about 27.3 s after injection. In the
+first, Terra requested routing tables and refreshed telemetry before proposing
+a patch. In the second it proposed a patch on the first call.
+
+Both cache entries had the same binding, identical structural guards and
+exactly the same 46 slow directed pairs (46/46 overlap). Only the typed patch
+differed. Each entry had one independent success and remained in quarantine.
+The first snapshot contained one entry and the final snapshot contained two.
+Collection mode exposed zero learned actions to the models. The matching
+tolerance introduced in v2 was unnecessary for this particular pair.
+
+An offline comparison used the two accepted intervention snapshots, identified
+through their SQLite validation records. We extracted the configured directed
+OSPF costs on all 14 backbone links, computed shortest distances, and compared
+all equal-cost next-hop choices for each ordered pair of distinct routers.
+All **110/110** sets matched. Costs 41 and 100 implemented the same modeled
+forwarding choices in this topology. Other costs or link states could change
+that result. The RTT and UDP measurements above establish the live effect of
+each individual patch under the tested fault.
+
+After acceptance and before fault removal, periodic windows on the repair
+configuration had median mean RTT of 5.26 ms (14 windows) and 5.31 ms (17).
+Train-02 had a high window of 54.43 ms. Its attempted optimization during the
+fault lowered peak utilization to 51.70% but raised RTT to 87.29 ms and was
+rolled back. After removal it accepted an optimization at 51.69% and 5.56 ms.
+Train-01 recorded one failed SEA→HOU connectivity probe window after removal.
+Across both complete sessions there were four Jev calls and nine Terra calls,
+with recorded charges of $0.146233 and $0.169558 per trial.
+
+The current cache groups successes by literal patch. This campaign demonstrated
+repeatable forwarding behavior across two different patches, while exact-action
+promotion and live Jev reuse remain open. A prospective next test could designate
+one previously successful patch in advance, verify it on an independent fault
+recurrence under the same gates, and then measure natural Jev selection with a
+frozen catalog. Label the designated-patch trial as validation when reporting
+model performance.
+
+### Designated validation promoted the first v2 repair
+
+We selected train-01's DEN Ethernet3 = 100, KCY Ethernet1 = 100 and SVA
+Ethernet2 = 10 by training order before injection. On a fresh recurrence the
+35/25 Mbps workload, 70 Mbps shaping, initial configuration and set of 46 slow
+directed pairs matched the training conditions. The stability policy permitted
+repair and reserved the intervention. The executor checked the healthy and
+candidate snapshots with Batfish, deployed the exact saved patch, waited for
+convergence, measured both receivers and confirmed the resulting configuration.
+
+| Measurement | Result |
+| --- | ---: |
+| Healthy split mean probe RTT | 5.15 ms |
+| Impaired → accepted runtime mean probe RTT | 87.14 → 5.58 ms |
+| Peak directional utilization before → after | 51.76% → 88.76% |
+| Subsequent mean RTTs with the delay present | 4.35, 4.57, 4.34 ms |
+| Measured loss for both UDP flows in the before and after windows | 0% |
+| Jev / Terra calls | 0 / 0 |
+
+The experiment confirmed the injected delay was present after the three
+stability windows, then removed it and restored the lab. Configuration, shaping
+and fault cleanup passed. The derived evaluation snapshot lists 100/100/10 as
+active with one naturally proposed Terra success and one designated validation.
+The 41/41/10 entry has one success and remains quarantined. The original v2
+training snapshot retained its recorded SHA-256. Selection was fixed by the
+protocol, so autonomous Jev selection and LLM avoidance still require an
+evaluation trial.
+
+Evidence and preparation are under
+`runs/thinking-cache-designated-20261128T005150Z/`. The preselection is in
+`protocol.json`, with live evidence in `trial/validation-events.jsonl`,
+`trial/validation-receipt.json` and `trial/summary.json`. The snapshot
+`trial/evaluation.sqlite` has SHA-256
+`58715a37c3a3727f88a5de8bb1224147c7829d4bede0290570a0a1873ec634fb`.
+The subsequent single 20-minute frozen trial has a separate plan, a fresh
+output directory and a read-only preflight. Its primary endpoint requires Jev
+to select the designated entry naturally, zero LLM calls during fault-to-repair,
+and acceptance before removal. LLM use during later optimization is reported
+separately.

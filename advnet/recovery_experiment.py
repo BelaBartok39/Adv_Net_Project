@@ -22,6 +22,7 @@ from .controller_live import LabNamespaces, LiveCollector
 from .controller_traffic import ReceiverTraffic, reference_profiles
 from .dynamic_traffic import load_schedule
 from .dynamic_udp import LOCK_PATH, _lab_lock
+from .designated_validation import DesignatedAction, verify_during_delay
 from .eos import candidate_configs, normalize_readback
 from .lab import Deadline, Lab, command
 from .persistent_controller import Clock, atomic_json
@@ -160,7 +161,7 @@ def setup(lab, namespaces, root, manifest, original, clock):
         traffic.cleanup(timeout_seconds=5)
 
 
-def validate(lab, namespaces, root, manifest, reference, delay_ms, clock):
+def validate(lab, namespaces, root, manifest, reference, delay_ms, clock, *, designated=None):
     """Prove that delay is measurable and the reference action can avoid it."""
     traffic = ReceiverTraffic(lab, namespaces.socket_at)
     collector = LiveCollector(lab, namespaces, traffic,
@@ -178,10 +179,20 @@ def validate(lab, namespaces, root, manifest, reference, delay_ms, clock):
         if (not impaired.all_reachable or not impaired.ospf_healthy
                 or impaired.performance_check(reference)['accepted']):
             raise ValueError('Fault did not produce isolated performance degradation')
-        # Reference action is used only in this validation arm, never as model feedback.
         configs = lab.configs(deadline)
-        candidate = candidate_configs(configs, proposal('den', 'Ethernet3', 100))
         verifier = ProcessVerifier([sys.executable, '-m', 'advnet.batfish_gate'])
+        if designated is not None:
+            collector.baselines[reference.demand_id] = reference
+            receipt = verify_during_delay(designated, collector, lab, verifier, configs, reference,
+                                          clock, root, lambda **e: record(events, **e), deadline)
+            if not any(row.get('handle') == delay.handle and row.get('kind') == 'netem'
+                       and row.get('parent') == delay.parent for row in delay.rows()):
+                raise ValueError('Injected delay missing at the final stability check')
+            atomic_json(root/'validation-receipt.json', receipt)
+            return dict(fault_rtt_ms=impaired.mean_rtt_ms, reference_rtt_ms=reference.mean_rtt_ms,
+                        stability_rtt_ms=receipt['stable_rtt_ms'], model_calls=0)
+        # Reference action is used only in this validation arm, never as model feedback.
+        candidate = candidate_configs(configs, proposal('den', 'Ethernet3', 100))
         verdict = verifier.verify(snapshot(root / 'reference-snapshot', candidate, manifest), deadline)
         atomic_json(root / 'reference-verification.json', verdict)
         if not verified(verdict):
@@ -290,7 +301,9 @@ def timed_results(root):
 
 def main(argv=None):
     cli = argparse.ArgumentParser(description=__doc__)
-    cli.add_argument('--arm', choices=['validate', 'observe', 'jev', 'llm'], required=True)
+    cli.add_argument('--arm', choices=['validate', 'designated', 'observe', 'jev', 'llm'], required=True)
+    cli.add_argument('--training-snapshot', type=Path)
+    cli.add_argument('--designated-action', help='Exact quarantined action ID to validate')
     cli.add_argument('--output', type=Path, required=True)
     cli.add_argument('--delay-ms', type=int, default=200, metavar='100..300')
     cli.add_argument('--fault-hold', type=controller.duration, default=180,
@@ -304,6 +317,9 @@ def main(argv=None):
     controller.add_llm_options(cli)
     args = cli.parse_args(argv)
     controller.validate_llm_options(args, cli)
+    if (args.arm == 'designated') != bool(args.training_snapshot) or (args.arm == 'designated') != bool(args.designated_action):
+        cli.error('Use --arm designated with both --training-snapshot and --designated-action')
+    designated = DesignatedAction(args.training_snapshot, args.designated_action) if args.training_snapshot else None
     if not 100 <= args.delay_ms <= 300:
         cli.error('--delay-ms must be from 100 to 300')
     if (args.cache_mode != 'off') != (args.thinking_cache is not None):
@@ -339,6 +355,13 @@ def main(argv=None):
             'workload_sha256': fingerprint(workload(duration_seconds)), 'source_sha256': {
                 str(p.relative_to(ROOT)): sha256(p.read_bytes()).hexdigest()
                 for p in sorted((ROOT / 'advnet').glob('*.py'))}}
+    if designated:
+        for document in (plan, summary):
+            document.update(scope='Independent designated-patch validation', duration_seconds=None,
+                            fault_after_seconds=None, fault_hold_seconds=None,
+                            validation_deadline_seconds=180, model_calls=0,
+                            training_snapshot_sha256=designated.sha256, action=designated.identifier,
+                            binding=designated.binding, changes=[c.model_dump() for c in designated.action.proposal.changes])
     matching = json.loads(args.match.read_text()) if args.match else None
     if matching is not None:
         for key in ('source_sha256', 'manifest_sha256', 'workload_sha256', 'delay_ms',
@@ -368,7 +391,10 @@ def main(argv=None):
                 reference = setup(lab, ns, root, manifest, original, clock)
                 if args.arm == 'validate':
                     summary.update(validate(lab, ns, root, manifest, reference, args.delay_ms, clock))
-        if args.arm != 'validate':
+                elif designated:
+                    summary.update(validate(lab, ns, root, manifest, reference, args.delay_ms, clock,
+                                            designated=designated))
+        if args.arm not in ('validate', 'designated'):
             command_line = ['run', '--duration', str(duration_seconds) + 's', '--system-one', 'jev' if args.arm == 'jev' else 'off',
                             '--workload', str(root / 'workload.json'), '--output', str(root / 'trials' / 'controller'),
                             '--max-output-tokens', str(args.max_output_tokens), '--llm-evidence', args.llm_evidence]
@@ -411,6 +437,10 @@ def main(argv=None):
                 summary['status'] = 'cleanup_failed'
             atomic_json(root / 'summary.json', summary)
             print(json.dumps(summary), flush=True)
+    if designated and summary['status'] == 'completed':
+        summary['frozen_evaluation'] = designated.publish(root, summary, json.loads((root/'validation-receipt.json').read_text()))
+        atomic_json(root/'summary.json', summary)
+        print(json.dumps(summary['frozen_evaluation']), flush=True)
     return 0 if all(summary[key] for key in ('configs_restored', 'shaping_unchanged', 'fault_cleared')) else 1
 
 

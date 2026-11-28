@@ -199,3 +199,22 @@ and check those candidates in Batfish without deploying them. This could expose
 scope and policy errors before live reuse. Batfish alone cannot establish actual
 latency/delivery improvement; shadow inference adds calls and its cost must be
 reported. Neither proposal is included in the current matching experiment.
+
+### Independent validation of a preselected patch
+
+`advnet.recovery_experiment --arm designated` takes a read-only training
+snapshot (`--training-snapshot`), an exact quarantined identifier
+(`--designated-action`), and a new output directory. The arm exercises the
+patch on a fresh performance fault after the stability policy permits repair.
+It checks context compatibility with all training examples, then runs Batfish,
+runtime acceptance, readback and three further stability windows while the
+delay remains active. The arm uses an event-driven validation period with a
+180-second deadline. Timing comparisons between natural decision arms use
+the timed experiment protocol.
+
+After successful validation and cleanup, `evaluation.sqlite` contains a copy
+of the training evidence plus the new trial and its origin in
+`designated_validations`. This procedure allows a successful independent
+validation to count toward promotion. When reporting the independent-success
+total, identify how many successes came from LLM selection and how many from
+designated validation. Use a fresh frozen trial to measure natural Jev selection.
