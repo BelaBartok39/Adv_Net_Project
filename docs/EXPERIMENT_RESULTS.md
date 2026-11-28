@@ -933,3 +933,113 @@ output directory and a read-only preflight. Its primary endpoint requires Jev
 to select the designated entry naturally, zero LLM calls during fault-to-repair,
 and acceptance before removal. LLM use during later optimization is reported
 separately.
+
+The first frozen launch stopped at protocol matching before trial creation or
+model inference. The launcher had included the topology file in the Python
+source inventory. The corrected plan retains all 36 original Python hashes and
+checks the topology separately. The actual child command passed protocol
+matching on retry in a preflight check. Live readback matched the training
+configuration and 70 Mbps shaping in all 28 backbone directions.
+
+### First natural Jev decision with a frozen, promoted repair
+
+The 20-minute evaluation repeated the 200 ms Denver → Kansas City delay with
+the promoted 100/100/10 repair available to Jev. The cache matched the observed
+symptoms and offered the designated entry. Jev escalated. Terra proposed the
+exact saved OSPF costs of 100 on Denver Ethernet3, 100 on Kansas City Ethernet1
+and 10 on Sunnyvale Ethernet2. The proposal passed Batfish and live acceptance
+84.72 s after injection, with 215.28 s left before scheduled fault removal.
+
+| Measure | Frozen trial 01 |
+|---|---:|
+| Accepted repairs during the fault | 1/1 |
+| Accepted repairs selected by Jev with zero LLM calls | 0/1 |
+| Jev’s highest class probability / execution threshold | 0.63 / 0.90 |
+| Fault to controller permission to evaluate a repair | 37.41 s |
+| Model calls between fault and acceptance | 1 Jev (0.44 s), 1 Terra (8.18 s) |
+| Mean probe RTT in healthy / impaired / repaired acceptance windows | 4.93 / 86.96 / 6.74 ms |
+| Peak directional utilization in those windows | 51.72% / 51.77% / 88.81% |
+
+Across the 22 complete observation windows after acceptance and before fault
+removal, median mean probe RTT was 5.50 ms (range 4.31–8.49 ms). All 22 windows
+passed host reachability and OSPF health checks. The repair restored latency
+while increasing peak load on the busiest link. Later optimization decisions
+added one Jev call and three Terra calls. The controller recorded no accepted
+optimization. All 117 receiver windows were recorded, traffic cleanup passed,
+router configurations were restored and backbone shaping was unchanged.
+
+The experiment demonstrated retrieval of a previously validated action and
+successful recovery through Terra. The primary endpoint of avoiding the LLM
+on this repair was missed. The decision journal retains the highest class
+probability and the effective route. It omits the pre-threshold winning label
+and the learned action’s own score, so this trial cannot establish how Jev
+ranked the repair. Recording those two fields in a classifier-only replay would
+distinguish a low-confidence first choice from another class outranking it.
+
+Evidence is under `runs/thinking-cache-designated-20261128T005150Z/frozen-01/`
+in `summary.json`, `fault-events.jsonl` and `trials/controller/events.jsonl`.
+
+The classifier replay in `runs/jev-frozen-01-replay/` uses the original trigger
+measurements, requested model, 14 choices and 0.90 threshold. The reconstructed
+input retrieved the same learned entry and matched the live catalog hash.
+Two substitutions were necessary. Individual probe readings come from
+the pre-deployment window ending 22.90 s after the trigger (mean RTT 86.96 ms
+versus 87.89 ms at the trigger). OSPF neighbors are represented by router IDs
+from the manifest, using the recorded check that all expected adjacencies
+were FULL. Replay probabilities measure Jev's response to this reconstruction.
+
+Jev ranked the promoted repair first (0.65) and escalation second (0.35).
+All 11 host-interface actions and `no_change` scored 0.00. The 0.90 threshold
+therefore routed this decision to escalation. The replay ended after one Jev
+call (424 ms, $0.00076713), with zero LLM calls and no deployment. The returned
+model version matched the live trial. The full ranking is in
+`runs/jev-frozen-01-replay/result.json`.
+
+This establishes that Jev recognized the learned repair as its first choice on
+the reconstructed input. The original trial recorded a top score of 0.63 and
+omitted the winning label, so its ranking remains unknown. A paired replay
+could test whether describing the repair's observed preconditions more precisely
+raises its score, holding the measurements, candidate changes and threshold
+fixed. A similar latency fault that requires a different action would check
+whether the new description also increases confidence in an inappropriate repair.
+
+### Paired Jev replay with a symptom-specific catalog description
+
+We compared the original generic description with one that names the observed
+conditions for the saved repair. These were healthy connectivity and OSPF,
+acceptable UDP delivery, and slow probe pairs whose forward or return paths
+cross Denver toward Kansas City. Each case had the same observations, 14
+choices, typed changes and 0.90 execution threshold under both wordings. Only
+the learned entry’s description changed in the two places the classifier sees
+it. We made one fresh call per cell, reversing wording order between cases.
+All four calls returned the same Jev version as the original frozen trial.
+
+| Case | Catalog wording | Saved repair score | Escalation score | First choice |
+| --- | --- | ---: | ---: | --- |
+| Denver → Kansas City, reconstructed | Original | 0.68 | 0.32 | Saved repair |
+| Denver → Kansas City, reconstructed | Symptom-specific | 0.73 | 0.27 | Saved repair |
+| Atlanta → Washington, modeled | Original | 0.59 | 0.41 | Saved repair |
+| Atlanta → Washington, modeled | Symptom-specific | 0.44 | 0.56 | Escalate |
+
+The second case uses 110 measured healthy pair RTTs and models a 200 ms
+one-way delay on Atlanta → Washington. OSPF shortest paths put 22 directed
+pairs across the delay on the outward or return journey. With the Denver
+patch, at least 28 pairs would still encounter it. The added delay alone
+would average at least 50.91 ms against an 11.16 ms limit. Raising the cost
+of the Atlanta–Washington connection instead removes the impaired direction
+from all modeled shortest paths. These are routing estimates. For the
+classifier comparison we deliberately included the Denver action in both
+cases, independently of the production cache’s eligibility check.
+
+The specific wording increased the target score by 0.05 on the matching
+fault and decreased it by 0.15 on the alternate fault, where escalation
+became the first choice. The effective route was escalation in all four
+cells. The replay made four Jev calls (reported total $0.003074064), zero LLM
+calls and no deployments. The earlier original-wording Denver replay scored
+0.65, compared with 0.68 in this fresh call on the same input. One call per
+cell gives an exploratory result. Repeated calls and another measured fault
+would test the stability of the ranking before a new live catalog trial.
+The frozen catalog and controller were unchanged.
+
+Evidence is in `runs/jev-description-pair/plan.json` and its four per-call
+result files. The matched Denver input was reconstructed as described above.
